@@ -1,0 +1,444 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL") // .env dosyasındaki MongoDB bağlantı adresiniz
+}
+
+// --- ENUM (Sabit Seçenekler) ---
+enum BoardType { 
+  INDIVIDUAL 
+  GROUP 
+}
+
+enum BoardRole { 
+  ADMIN 
+  EDITOR 
+  MEMBER 
+  COMMENTER 
+  VIEWER 
+}
+enum TaskApprovalStatus {
+  NOT_REQUIRED
+  PENDING 
+  APPROVED 
+  REJECTED 
+}
+enum TaskPriority { 
+  LOW 
+  NORMAL 
+  HIGH 
+  URGENT 
+}
+
+enum TicketStatus { 
+  OPEN 
+  IN_PROGRESS 
+  RESOLVED 
+  CLOSED 
+}
+
+enum UserRole {
+  USER 
+  ADMIN
+} // Genel Kullanıcı Rolü
+enum ActivityActionType {
+  // Pano
+  CREATE_BOARD 
+  UPDATE_BOARD_NAME 
+  ADD_BOARD_MEMBER 
+  REMOVE_BOARD_MEMBER 
+  DELETE_BOARD 
+  UPDATE_MEMBER_ROLE 
+  TRANSFER_OWNERSHIP
+  // Liste
+  CREATE_LIST 
+  UPDATE_LIST_NAME 
+  DELETE_LIST 
+  REORDER_LISTS
+  // Görev
+  CREATE_TASK 
+  UPDATE_TASK_DETAILS 
+  UPDATE_TASK_STATUS 
+  MOVE_TASK 
+  ASSIGN_TASK 
+  UNASSIGN_TASK 
+  ADD_TASK_TAG 
+  REMOVE_TASK_TAG 
+  ADD_TASK_DEPENDENCY 
+  REMOVE_TASK_DEPENDENCY 
+  DELETE_TASK 
+  REORDER_TASKS
+  // Alt Görev
+  CREATE_CHECKLIST_ITEM 
+  UPDATE_CHECKLIST_ITEM 
+  TOGGLE_CHECKLIST_ITEM 
+  ASSIGN_CHECKLIST_ITEM 
+  UNASSIGN_CHECKLIST_ITEM 
+  ADD_CHECKLIST_IMAGE 
+  DELETE_CHECKLIST_IMAGE 
+  DELETE_CHECKLIST_ITEM
+  // Yorum
+  ADD_TASK_COMMENT 
+  DELETE_TASK_COMMENT
+  // Ek
+  ADD_TASK_ATTACHMENT 
+  DELETE_TASK_ATTACHMENT
+  // Etiket
+  CREATE_TAG 
+  DELETE_TAG
+  // Admin Kullanıcı Yönetimi
+  CHANGE_USER_ROLE 
+  SET_USER_STATUS 
+  DELETE_USER
+  // Admin Pano Yönetimi
+  ADMIN_DELETE_BOARD
+  // Admin İçerik Yönetimi
+  ADMIN_DELETE_COMMENT 
+  ADMIN_DELETE_ATTACHMENT
+  // Admin Destek Yönetimi
+  ASSIGN_SUPPORT_TICKET 
+  DELETE_SUPPORT_TICKET
+}
+
+
+// --- MODELLER ---
+
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
+  name      String
+// --- YENİ ALAN ---
+  username  String?  @unique // Kullanıcının @ ile bahsedilecek adı (opsiyonel ve benzersiz)
+  password  String?
+  googleId  String?  @unique
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  role      UserRole @default(USER)
+  isActive  Boolean  @default(true) // Kullanıcı aktif mi?
+  createdWebhooks Webhook[] // Kullanıcının oluşturduğu webhook'lar
+  // İlişkiler
+  boards                 BoardMembership[]
+  createdTasks           Task[]            @relation("CreatedBy")
+  messages               Message[]
+  createdBoards          Board[]           @relation("BoardCreator")
+  submittedTickets       SupportTicket[]   @relation("SubmittedByUser")
+  assignedTickets        SupportTicket[]   @relation("AssignedToAdmin")
+  ticketComments         SupportTicketComment[]
+  taskComments           TaskComment[]     @relation("CommentAuthor")
+  uploadedAttachments    TaskAttachment[]  @relation("AttachmentUploader")
+  activities             ActivityLog[]
+  reactions              Reaction[]
+  timeEntries            TimeEntry[]
+  notifications          Notification[]    // Kullanıcının bildirimleri
+  // --- YENİ İLİŞKİLER (DM için) ---
+  // Kullanıcının dahil olduğu özel konuşmalar
+  conversations         ConversationParticipant[]
+  // Kullanıcının gönderdiği özel mesajlar
+  sentDirectMessages    DirectMessage[]           @relation("Sender")
+  // Kullanıcının aldığı özel mesajlar (Bildirim vb. için kullanılabilir)
+  receivedDirectMessages DirectMessage[]           @relation("Receiver")
+
+  // Çoka-Çok İlişkiler (Düzeltilmiş Hali)
+  assignedTasks          Task[]   @relation("TaskAssignees", fields: [assignedTaskIds], references: [id])
+  assignedTaskIds        String[] @db.ObjectId
+  assignedChecklistItems ChecklistItem[] @relation("ChecklistItemAssignees", fields: [assignedChecklistItemIds], references: [id])
+  assignedChecklistItemIds String[]        @db.ObjectId
+}
+
+model Board {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  type      BoardType @default(INDIVIDUAL)
+  createdAt DateTime  @default(now())
+  createdBy   User?    @relation(name: "BoardCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById String?  @db.ObjectId
+  webhooks Webhook[] // Bu panoya ait webhook'lar
+  members      BoardMembership[]
+  lists        TaskList[]
+  tags         Tag[]
+  messages     Message[]
+  activityLogs ActivityLog[]
+  notifications Notification[]
+}
+
+model BoardMembership {
+  id       String    @id @default(auto()) @map("_id") @db.ObjectId
+  role     BoardRole @default(MEMBER)
+  joinedAt DateTime  @default(now())
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId   String    @db.ObjectId
+  board    Board     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  boardId  String    @db.ObjectId
+  @@unique([userId, boardId])
+}
+
+model TaskList {
+  id      String @id @default(auto()) @map("_id") @db.ObjectId
+  title   String
+  order   Int
+  board   Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  boardId String @db.ObjectId
+  tasks   Task[]
+  activityLogs ActivityLog[]
+}
+
+model Tag {
+  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  name    String
+  color   String
+  board   Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  boardId String   @db.ObjectId
+  tasks   Task[]   @relation("TaskTags", fields: [taskIds], references: [id])
+  taskIds String[] @db.ObjectId
+  @@unique([name, boardId])
+}
+
+model Task {
+  id             String             @id @default(auto()) @map("_id") @db.ObjectId
+  title          String
+  description    String?
+  mediaUrl       String?
+  mediaType      String?
+  createdAt      DateTime           @default(now())
+  approvalStatus TaskApprovalStatus @default(NOT_REQUIRED)
+  priority       TaskPriority       @default(NORMAL)
+  startDate      DateTime?
+  dueDate        DateTime?
+  order          Int                @default(0) // Liste içi sıra
+
+  taskList   TaskList @relation(fields: [taskListId], references: [id], onDelete: Cascade)
+  taskListId String   @db.ObjectId
+  createdBy   User?    @relation(name: "CreatedBy", fields: [createdById], references: [id], onDelete: SetNull) // Düzeltilmiş P1012
+  createdById String?  @db.ObjectId // Düzeltilmiş P1012
+  assignees   User[]   @relation(name: "TaskAssignees", fields: [assigneeIds], references: [id]) // Düzeltilmiş Çoka-Çok
+  assigneeIds String[] @db.ObjectId // Düzeltilmiş Çoka-Çok
+  checklistItems ChecklistItem[]
+  tags           Tag[]    @relation(name: "TaskTags", fields: [tagIds], references: [id])
+  tagIds         String[] @db.ObjectId
+  comments       TaskComment[]
+  attachments    TaskAttachment[]
+  blockingTasks   Task[]   @relation("TaskDependencies", fields: [blockingTaskIds], references: [id])
+  blockingTaskIds String[] @db.ObjectId @map("blocked_by_ids")
+  dependentTasks   Task[]   @relation("TaskDependencies", fields: [dependentTaskIds], references: [id])
+  dependentTaskIds String[] @db.ObjectId @map("blocking_ids")
+  activityLogs ActivityLog[]
+  reactions Reaction[] @relation("TaskReactions")
+  timeEntries TimeEntry[]
+  notifications Notification[]
+}
+
+model ChecklistItem {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  text        String
+  isCompleted Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  dueDate     DateTime?
+
+  task        Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId      String   @db.ObjectId
+  assignees   User[]   @relation(name: "ChecklistItemAssignees", fields: [assigneeIds], references: [id]) // Düzeltilmiş Çoka-Çok
+  assigneeIds String[] @db.ObjectId // Düzeltilmiş Çoka-Çok
+  images      ChecklistImage[]
+}
+
+model ChecklistImage {
+  id              String        @id @default(auto()) @map("_id") @db.ObjectId
+  url             String
+  createdAt       DateTime      @default(now())
+  checklistItem   ChecklistItem @relation(fields: [checklistItemId], references: [id], onDelete: Cascade)
+  checklistItemId String        @db.ObjectId
+}
+
+model Message {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  text      String
+  createdAt DateTime @default(now())
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull) // Düzeltilmiş P1012
+  authorId  String?  @db.ObjectId // Düzeltilmiş P1012
+  board     Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  boardId   String   @db.ObjectId // Düzeltilmiş P1012 (zorunlu)
+}
+
+// --- Destek Bileti Modelleri ---
+model SupportTicket {
+  id               String       @id @default(auto()) @map("_id") @db.ObjectId
+  subject          String
+  description      String
+  submittedByName  String
+  submittedByEmail String
+  status           TicketStatus @default(OPEN)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  submittedBy      User?        @relation("SubmittedByUser", fields: [submittedById], references: [id], onDelete: SetNull)
+  submittedById    String?      @db.ObjectId
+  assignedAdmin    User?        @relation("AssignedToAdmin", fields: [assignedAdminId], references: [id], onDelete: SetNull)
+  assignedAdminId  String?      @db.ObjectId
+  images           SupportTicketImage[]
+  comments         SupportTicketComment[]
+}
+model SupportTicketImage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  url       String
+  createdAt DateTime @default(now())
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticketId  String        @db.ObjectId
+}
+model SupportTicketComment {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  text      String
+  createdAt DateTime @default(now())
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  authorId  String?  @db.ObjectId
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticketId  String        @db.ObjectId
+}
+
+// --- Yeni Modeller ---
+model TaskComment {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  text      String
+  createdAt DateTime @default(now())
+  author    User?    @relation("CommentAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  authorId  String?  @db.ObjectId
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId    String   @db.ObjectId
+  activityLogs ActivityLog[]
+  reactions Reaction[] @relation("CommentReactions")
+  notifications Notification[]
+}
+model TaskAttachment {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  url          String
+  fileName     String
+  fileType     String?
+  uploadedAt   DateTime @default(now())
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId       String   @db.ObjectId
+  uploadedBy   User?    @relation("AttachmentUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  uploadedById String?  @db.ObjectId
+}
+model ActivityLog {
+  id         String             @id @default(auto()) @map("_id") @db.ObjectId
+  actionType ActivityActionType
+  details    String?
+  timestamp  DateTime           @default(now())
+  user       User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId     String?            @db.ObjectId
+  board      Board              @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  boardId    String             @db.ObjectId
+  task       Task?              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId     String?            @db.ObjectId
+  taskList   TaskList?          @relation(fields: [taskListId], references: [id], onDelete: Cascade)
+  taskListId String?            @db.ObjectId
+  comment    TaskComment?       @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  commentId  String?            @db.ObjectId
+}
+model Reaction {
+  id        String       @id @default(auto()) @map("_id") @db.ObjectId
+  emoji     String
+  createdAt DateTime     @default(now())
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String       @db.ObjectId
+  task      Task?        @relation("TaskReactions", fields: [taskId], references: [id], onDelete: Cascade)
+  taskId    String?      @db.ObjectId
+  comment   TaskComment? @relation("CommentReactions", fields: [commentId], references: [id], onDelete: Cascade)
+  commentId String?      @db.ObjectId
+  @@unique([userId, emoji, taskId])
+  @@unique([userId, emoji, commentId])
+}
+model TimeEntry {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  startTime  DateTime
+  endTime    DateTime?
+  duration   Int?      // Dakika cinsinden
+  notes      String?
+  createdAt  DateTime  @default(now())
+  task       Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId     String    @db.ObjectId
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String    @db.ObjectId
+  @@index([userId, startTime])
+  @@index([taskId, startTime])
+}
+model Notification {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  message   String
+  isRead    Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String    @db.ObjectId
+  board     Board?    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  boardId   String?   @db.ObjectId
+  task      Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId    String?   @db.ObjectId
+  comment   TaskComment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  commentId String?      @db.ObjectId
+  @@index([userId, isRead])
+}
+// --- YENİ MODEL: Webhook ---
+model Webhook {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  targetUrl  String   // İsteğin gönderileceği URL
+  eventTypes String[] // Dinlenen olay türleri (ActivityActionType enum değerleri)
+  isActive   Boolean  @default(true) // Webhook aktif mi?
+  createdAt  DateTime @default(now())
+
+  // İlişki: Webhook hangi panoya ait? (Pano bazlı olaylar için)
+  board      Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  boardId    String   @db.ObjectId
+
+  // İlişki: Webhook'u kim oluşturdu?
+  createdBy  User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdById String?  @db.ObjectId
+
+  // Hangi olay türlerini dinlediğini hızlı sorgulamak için indexwebhooks Webhook[] // Bu panoya ait webhook'lar
+  @@index([boardId, isActive])
+}
+
+// İki kullanıcı arasındaki özel konuşmayı temsil eder
+model Conversation {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt // Son mesaj zamanını tutmak için
+
+  // İlişki: Konuşmadaki katılımcılar (Her zaman 2 kişi olmalı)
+  participants ConversationParticipant[]
+  // İlişki: Konuşmadaki mesajlar
+  messages     DirectMessage[]
+}
+
+// Kullanıcının hangi konuşmalara katıldığını gösteren köprü modeli
+model ConversationParticipant {
+  id             String       @id @default(auto()) @map("_id") @db.ObjectId
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String       @db.ObjectId
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversationId String       @db.ObjectId
+
+  @@unique([userId, conversationId]) // Bir kullanıcı bir konuşmaya bir kez katılabilir
+}
+
+// Özel Mesaj (Direct Message) Modeli
+model DirectMessage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  text      String   // Mesaj içeriği
+  createdAt DateTime @default(now())
+  isRead    Boolean  @default(false) // Alıcı tarafından okundu mu?
+
+  // İlişki: Mesajı gönderen
+  sender    User     @relation("Sender", fields: [senderId], references: [id], onDelete: Cascade)
+  senderId  String   @db.ObjectId
+
+  // İlişki: Mesajı alan
+  receiver  User     @relation("Receiver", fields: [receiverId], references: [id], onDelete: Cascade)
+  receiverId String  @db.ObjectId
+
+  // İlişki: Hangi konuşmaya ait?
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversationId String       @db.ObjectId
+
+  @@index([conversationId, createdAt]) // Konuşma geçmişini hızlı çekmek için
+}
