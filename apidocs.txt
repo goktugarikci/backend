@@ -1,0 +1,831 @@
+Todo List API Dokümantasyonu v1.1.0
+Base URL: http://localhost:PORT (örn: http://localhost:5000)
+
+Kimlik Doğrulama:
+
+Private veya daha spesifik bir rol (Admin, Creator, Editor, Member, Commenter, Viewer) gerektiren tüm endpoint'ler, HTTP Authorization başlığında geçerli bir JWT Bearer Token gerektirir.
+
+Format: Authorization: Bearer <YOUR_JWT_TOKEN>
+
+Roller (BoardRole): ADMIN > EDITOR > MEMBER > COMMENTER > VIEWER (Soldan sağa daha yetkili)
+
+Genel Rol (UserRole): ADMIN, USER
+
+Genel Veri Tipleri:
+
+string (ObjectID): MongoDB ID (örn: "653ac7...").
+
+string (ISO 8601): Tam tarih/saat (örn: "2025-10-27T10:59:00.000Z").
+
+string (YYYY-MM-DD): Sadece tarih.
+
+Enum (...): Belirtilen sabit string değerlerinden biri.
+
+?: Alanın opsiyonel (isteğe bağlı) olduğunu belirtir.
+
+Genel Hata Yanıtları:
+
+400 Bad Request: Eksik/hatalı veri, geçersiz format.
+
+401 Unauthorized: Geçerli token yok/geçersiz.
+
+403 Forbidden: Yetersiz yetki (rol).
+
+404 Not Found: Kaynak bulunamadı.
+
+500 Internal Server Error: Sunucu hatası.
+
+1. Kimlik Doğrulama (/api/auth)
+POST /register
+
+Özet: Yeni kullanıcı kaydı (USER rolüyle).
+
+Erişim: Public
+
+Body: { name: string (Req), email: string (Req, unique), password: string (Req, min 6) }
+
+Yanıt (201): { token: string (JWT), role: "USER" }
+
+POST /login
+
+Özet: Kullanıcı girişi (Aktif kullanıcılar için).
+
+Erişim: Public
+
+Body: { email: string (Req), password: string (Req) }
+
+Yanıt (200): { token: string (JWT), role: "USER | ADMIN" } (Kullanıcının rolünü döndürür)
+
+GET /google
+
+Özet: Google OAuth akışını başlatır.
+
+Erişim: Public
+
+GET /google/callback
+
+Özet: Google OAuth geri dönüşü.
+
+Erişim: Public
+
+Yanıt: Frontend'e JWT ile yönlendirme (302).
+
+PUT /set-password
+
+Özet: Giriş yapmış kullanıcının yerel parolasını belirler.
+
+Erişim: Private
+
+Body: { password: string (Req, min 6) }
+
+Yanıt (200): { msg: string }
+
+2. Kullanıcı (/api/user)
+Tümü Private erişimli.
+
+PUT /change-password
+
+Özet: Kullanıcının kendi şifresini değiştirir.
+
+Body: { currentPassword: string (Req), newPassword: string (Req, min 6) }
+
+Yanıt (200): { msg: string }
+
+PUT /update-name
+
+Özet: Kullanıcının kendi adını günceller.
+
+Body: { name: string (Req) }
+
+Yanıt (200): { msg: string, user: UserPublicInfo }
+
+POST /profile-image
+
+Özet: Kullanıcının profil resmini yükler/günceller.
+
+Body (multipart/form-data): profileImage (File, Required)
+
+Yanıt (200): { msg: string, user: UserPublicInfo }
+
+GET /me
+
+Özet: Giriş yapmış kullanıcının bilgilerini getirir.
+
+Yanıt (200): UserPublicInfo
+
+GET /me/tasks
+
+Özet: Kullanıcının atanmış görevlerini getirir (Filtreli/Sıralı).
+
+Query: boardId?, status?, priority?, dueDateBefore?, dueDateAfter?, sortBy?, sortOrder?
+
+Yanıt (200): [ TaskSummary, ... ]
+
+GET /me/time-entries
+
+Özet: Kullanıcının zaman kayıtlarını getirir (Filtreli/Sayfalı).
+
+Query: startDate?, endDate? (YYYY-MM-DD), page?, limit?
+
+Yanıt (200): { entries: [ TimeEntryWithTaskInfo ], totalEntries, currentPage, totalPages }
+
+3. Panolar / Gruplar (/api/boards)
+Tümü Private erişimli.
+
+POST /
+
+Özet: Yeni Pano oluşturur (Oluşturan ADMIN olur).
+
+Body: { name: string (Req), type?: Enum("INDIVIDUAL" | "GROUP") }
+
+Yanıt (201): Board
+
+GET /myboards
+
+Özet: Üye olunan panoları listeler.
+
+Yanıt (200): [ BoardSummary, ... ]
+
+GET /:boardId
+
+Özet: Pano detaylarını getirir (VIEWER veya üstü gerekli).
+
+Params: boardId: string (ObjectID)
+
+Query: Görev filtreleme/sıralama (assignee, tag, priority, status, dueDateBefore, dueDateAfter, search, sortBy, sortOrder)
+
+Yanıt (200): BoardDetailed
+
+PUT /:boardId
+
+Özet: Pano adını günceller (ADMIN yetkisi gerekli).
+
+Params: boardId
+
+Body: { name: string (Req) }
+
+Yanıt (200): Board
+
+POST /:boardId/members
+
+Özet: E-posta ile üye ekler (ADMIN yetkisi gerekli).
+
+Params: boardId
+
+Body: { email: string (Req) }
+
+Yanıt (201): BoardMembershipWithUser
+
+DELETE /:boardId/members
+
+Özet: Üye çıkarır (ADMIN yetkisi gerekli, Creator çıkarılamaz).
+
+Params: boardId
+
+Body: { userIdToRemove: string (ObjectID, Req) }
+
+Yanıt (200): { msg: string }
+
+PUT /:boardId/members/:memberUserId/role
+
+Özet: Üye rolünü değiştirir (ADMIN yetkisi gerekli, Creator değiştirilemez).
+
+Params: boardId, memberUserId
+
+Body: { role: Enum(BoardRole, Req) }
+
+Yanıt (200): BoardMembershipWithUser
+
+DELETE /:boardId
+
+Özet: Panoyu siler (Sadece Oluşturan Kişi yetkisi).
+
+Params: boardId
+
+Yanıt (200): { msg: string }
+
+PUT /:boardId/lists/reorder
+
+Özet: Listelerin sırasını günceller (EDITOR veya üstü yetki).
+
+Params: boardId
+
+Body: [ { listId: string (ObjectID), order: number }, ... ] (Required)
+
+Yanıt (200): { msg: string }
+
+GET /:boardId/webhooks
+
+Özet: Panonun webhook'larını listeler (ADMIN yetkisi).
+
+Params: boardId
+
+Yanıt (200): [ Webhook, ... ]
+
+GET /:boardId/reports
+
+Özet: Pano bazlı raporları getirir (EDITOR veya üstü).
+
+Params: boardId
+
+Query: reportType: string (Req, "completion" | "overdue" | ... ), startDate?, endDate? (YYYY-MM-DD)
+
+Yanıt (200): { reportType: string, data: object }
+
+GET /:boardId/activity
+
+Özet: Panonun aktivite loglarını getirir (VIEWER veya üstü, sayfalı).
+
+Params: boardId
+
+Query: page?, limit?
+
+Yanıt (200): { activities: [ ActivityLogWithDetails ], totalActivities, currentPage, totalPages }
+
+4. Etiketler (/api/tags)
+Tümü Private erişimli (Pano Üyeliği gerekli).
+
+POST /
+
+Özet: Yeni etiket oluşturur (MEMBER veya üstü?).
+
+Body: { name: string, color: string (hex), boardId: string (ObjectID) } (Req)
+
+Yanıt (201): Tag
+
+DELETE /:tagId
+
+Özet: Etiketi siler (EDITOR veya üstü?).
+
+Params: tagId: string (ObjectID)
+
+Yanıt (200): { msg: string }
+
+5. Görev Listeleri / Sütunlar (/api/tasklists)
+Tümü Private erişimli.
+
+POST /
+
+Özet: Yeni liste oluşturur (EDITOR veya üstü).
+
+Body: { title: string, boardId: string (ObjectID) } (Req)
+
+Yanıt (201): TaskList
+
+PUT /:listId
+
+Özet: Liste başlığını günceller (EDITOR veya üstü).
+
+Params: listId
+
+Body: { title: string } (Req)
+
+Yanıt (200): TaskList
+
+DELETE /:listId
+
+Özet: Listeyi ve görevlerini siler (EDITOR veya üstü).
+
+Params: listId
+
+Yanıt (200): { msg: string }
+
+PUT /:listId/tasks/reorder
+
+Özet: Liste içindeki görev sırasını günceller (MEMBER veya üstü).
+
+Params: listId
+
+Body: [ { taskId: string (ObjectID), order: number }, ... ] (Req)
+
+Yanıt (200): { msg: string }
+
+6. Görevler / Kartlar (/api/tasks)
+Erişim detayları belirtilmiştir.
+
+POST /
+
+Özet: Yeni görev oluşturur (MEMBER veya üstü).
+
+Body: { title: string (Req), taskListId: string (ObjectID, Req), description?, priority?, startDate?, dueDate?, tagIds?: [] }
+
+Yanıt (201): TaskWithDetails
+
+PUT /:taskId
+
+Özet: Görev detaylarını günceller (EDITOR+ veya atanan MEMBER).
+
+Params: taskId
+
+Body: { title?, description?, priority?, startDate?, dueDate?, tagIds?: [], approvalStatus? } (En az biri)
+
+Yanıt (200): TaskWithDetails
+
+DELETE /:taskId
+
+Özet: Görevi siler (EDITOR veya üstü).
+
+Params: taskId
+
+Yanıt (200): { msg: string }
+
+POST /:taskId/assign
+
+Özet: Göreve kullanıcı atar (EDITOR veya üstü).
+
+Params: taskId
+
+Body: { assignUserId: string (ObjectID, Req) }
+
+Yanıt (200): TaskWithDetails
+
+POST /:taskId/unassign
+
+Özet: Görevden atamayı kaldırır (EDITOR veya üstü).
+
+Params: taskId
+
+Body: { unassignUserId: string (ObjectID, Req) }
+
+Yanıt (200): TaskWithDetails
+
+PATCH /:taskId/move
+
+Özet: Görevi başka listeye taşır (EDITOR veya üstü).
+
+Params: taskId
+
+Body: { newTaskListId: string (ObjectID, Req), newOrder?: number }
+
+Yanıt (200): Task
+
+POST /:taskId/dependencies
+
+Özet: Göreve bağımlılık ekler (EDITOR veya üstü).
+
+Params: taskId
+
+Body: { dependencyTaskId: string (ObjectID, Req), type: "blocking" | "waiting_on" (Req) }
+
+Yanıt (200): TaskWithDependencies
+
+DELETE /:taskId/dependencies/:dependencyTaskId
+
+Özet: Görevden bağımlılığı kaldırır (EDITOR veya üstü).
+
+Params: taskId, dependencyTaskId
+
+Yanıt (200): { msg: string }
+
+GET /:taskId/dependencies
+
+Özet: Görevin bağımlılıklarını getirir (VIEWER veya üstü).
+
+Params: taskId
+
+Yanıt (200): { blockingTasks: [TaskSummary], dependentTasks: [TaskSummary] }
+
+POST /:taskId/comments
+
+Özet: Göreve yorum ekler (COMMENTER veya üstü).
+
+Params: taskId
+
+Body: { text: string (Req) }
+
+Yanıt (201): TaskCommentWithAuthor
+
+GET /:taskId/comments
+
+Özet: Görevin yorumlarını listeler (VIEWER veya üstü).
+
+Params: taskId
+
+Yanıt (200): [ TaskCommentWithAuthorAndReactions, ... ]
+
+POST /:taskId/attachments
+
+Özet: Göreve dosya ekler (MEMBER veya üstü).
+
+Params: taskId
+
+Body (multipart/form-data): attachments (File Array, Max 5, Required)
+
+Yanıt (201): [ TaskAttachmentWithUploader, ... ]
+
+GET /:taskId/attachments
+
+Özet: Görevin eklerini listeler (VIEWER veya üstü).
+
+Params: taskId
+
+Yanıt (200): [ TaskAttachmentWithUploader, ... ]
+
+POST /:taskId/reactions
+
+Özet: Göreve reaksiyon ekler/kaldırır (COMMENTER veya üstü).
+
+Params: taskId
+
+Body: { emoji: string (Req) }
+
+Yanıt (200/201): { message: string, reactions: [ { emoji: string, count: number } ] }
+
+POST /:taskId/time-entries/start
+
+Özet: Görev için zamanlayıcı başlatır (MEMBER veya üstü).
+
+Params: taskId
+
+Yanıt (201): TimeEntry
+
+POST /:taskId/time-entries/stop
+
+Özet: Zamanlayıcıyı durdurur (MEMBER veya üstü).
+
+Params: taskId
+
+Body: { notes?: string }
+
+Yanıt (200): TimeEntry
+
+POST /:taskId/time-entries
+
+Özet: Manuel zaman girişi ekler (MEMBER veya üstü).
+
+Params: taskId
+
+Body: { durationInMinutes: number (Req), date: string (YYYY-MM-DD, Req), notes?: string }
+
+Yanıt (201): TimeEntry
+
+GET /:taskId/time-entries
+
+Özet: Görevin zaman kayıtlarını listeler (VIEWER veya üstü).
+
+Params: taskId
+
+Query: page?, limit?
+
+Yanıt (200): { entries: [ TimeEntryWithUser ], totalEntries, currentPage, totalPages }
+
+GET /:taskId/activity
+
+Özet: Görevin aktivite loglarını getirir (VIEWER veya üstü, sayfalı).
+
+Params: taskId
+
+Query: page?, limit?
+
+Yanıt (200): { activities: [ ActivityLogWithDetails ], totalActivities, currentPage, totalPages }
+
+7. Alt-Görevler / Checklist (/api/checklist)
+Tümü Private erişimli (Pano üyeliği gerekli, rol belirtilmedikçe genellikle ana görevle aynı).
+
+POST /task/:taskId
+
+Özet: Ana göreve alt görev ekler.
+
+Params: taskId
+
+Body: { text: string (Req), dueDate?: string (ISO 8601) }
+
+Yanıt (201): ChecklistItem
+
+PUT /:itemId/toggle
+
+Özet: Alt görevin tamamlanma durumunu değiştirir.
+
+Params: itemId
+
+Yanıt (200): ChecklistItem
+
+PUT /:itemId
+
+Özet: Alt görevin metnini/bitiş tarihini günceller.
+
+Params: itemId
+
+Body: { text?: string, dueDate?: string (ISO 8601) | null } (En az biri)
+
+Yanıt (200): ChecklistItemWithDetails
+
+DELETE /:itemId
+
+Özet: Alt görevi ve resimlerini siler.
+
+Params: itemId
+
+Yanıt (200): { msg: string }
+
+POST /:itemId/assign
+
+Özet: Alt göreve kullanıcı atar.
+
+Params: itemId
+
+Body: { assignUserId: string (ObjectID, Req) }
+
+Yanıt (200): ChecklistItemWithDetails
+
+POST /:itemId/unassign
+
+Özet: Alt görevden atamayı kaldırır.
+
+Params: itemId
+
+Body: { unassignUserId: string (ObjectID, Req) }
+
+Yanıt (200): ChecklistItem
+
+POST /:itemId/images
+
+Özet: Alt göreve resim yükler (Max 5).
+
+Params: itemId
+
+Body (multipart/form-data): images (File Array, Max 5, Req)
+
+Yanıt (201): ChecklistItemWithDetails
+
+DELETE /image/:imageId
+
+Özet: Alt göreve bağlı resmi siler.
+
+Params: imageId
+
+Yanıt (200): { msg: string }
+
+8. Sohbet Mesajları (/api/messages)
+Tümü Private erişimli (Pano Üyeliği gerekli).
+
+GET /board/:boardId
+
+Özet: Pano sohbet geçmişini getirir (Son 100).
+
+Params: boardId
+
+Yanıt (200): [ MessageWithAuthor, ... ]
+
+9. Özel Mesajlar (DM) (/api/dm)
+Tümü Private erişimli.
+
+GET /conversations
+
+Özet: Kullanıcının özel konuşmalarını listeler (son mesaj ve okunmamış sayısı ile).
+
+Yanıt (200): [ { conversationId, otherUser: UserPublicInfo, lastMessage: DirectMessageSummary, unreadCount: number, updatedAt }, ... ]
+
+GET /:userId2
+
+Özet: Belirli bir kullanıcıyla mesaj geçmişini getirir (sayfalı, okundu yapar).
+
+Params: userId2: string (ObjectID)
+
+Query: page?, limit?
+
+Yanıt (200): { messages: [ DirectMessageWithSender ], totalMessages, currentPage, totalPages }
+
+10. Destek Biletleri (/api/support)
+POST /tickets
+
+Erişim: Private
+
+Body (Form-Data): subject?, description (Req), submittedByName (Req), submittedByEmail (Req), images? (Max 3 File)
+
+Yanıt (201): SupportTicketWithImages
+
+POST /tickets/:ticketId/comments
+
+Erişim: Private (Bileti açan veya Admin)
+
+Params: ticketId
+
+Body: { text: string (Req) }
+
+Yanıt (201): SupportTicketCommentWithAuthor
+
+GET /tickets
+
+Erişim: Admin
+
+Yanıt (200): [ SupportTicketSummary, ... ]
+
+GET /tickets/:ticketId
+
+Erişim: Admin
+
+Params: ticketId
+
+Yanıt (200): SupportTicketDetailed
+
+PUT /tickets/:ticketId/status
+
+Erişim: Admin
+
+Params: ticketId
+
+Body: { status: Enum(TicketStatus, Req) }
+
+Yanıt (200): SupportTicket
+
+PUT /tickets/:ticketId/assign
+
+Erişim: Admin
+
+Params: ticketId
+
+Body: { assignAdminId: string (ObjectID, Req) }
+
+Yanıt (200): SupportTicketWithAssignedAdmin
+
+DELETE /tickets/:ticketId
+
+Erişim: Admin
+
+Params: ticketId
+
+Yanıt (200): { msg: string }
+
+11. Admin Paneli (/api/admin)
+Tümü Admin erişimli.
+
+GET /boards
+
+Özet: Tüm panoları listeler.
+
+Yanıt (200): [ BoardSummaryAdmin, ... ]
+
+GET /boards/:boardId
+
+Özet: Pano detaylarını getirir (üyelik şartı olmadan).
+
+Params: boardId
+
+Yanıt (200): BoardDetailed
+
+DELETE /boards/:boardId
+
+Özet: Herhangi bir panoyu siler.
+
+Params: boardId
+
+Yanıt (200): { msg: string }
+
+PATCH /boards/:boardId/transfer-ownership
+
+Özet: Pano sahipliğini aktarır.
+
+Params: boardId
+
+Body: { newOwnerUserId: string (ObjectID, Req) }
+
+Yanıt (200): { msg, board: Board }
+
+GET /users
+
+Özet: Tüm kullanıcıları listeler.
+
+Yanıt (200): [ UserAdminSummary, ... ]
+
+GET /users/:userId
+
+Özet: Kullanıcı detaylarını getirir.
+
+Params: userId
+
+Yanıt (200): UserAdminDetailed
+
+PUT /users/:userId/role
+
+Özet: Kullanıcı rolünü değiştirir.
+
+Params: userId
+
+Body: { role: "USER" | "ADMIN" (Req) }
+
+Yanıt (200): UserAdminSummary
+
+PUT /users/:userId/status
+
+Özet: Kullanıcı hesabını aktif/pasif yapar.
+
+Params: userId
+
+Body: { isActive: boolean (Req) }
+
+Yanıt (200): UserAdminSummary
+
+DELETE /users/:userId
+
+Özet: Kullanıcı hesabını siler.
+
+Params: userId
+
+Yanıt (200): { msg: string }
+
+DELETE /comments/:commentId
+
+Özet: Herhangi bir görevin yorumunu siler.
+
+Params: commentId
+
+Yanıt (200): { msg: string }
+
+DELETE /attachments/:attachmentId
+
+Özet: Herhangi bir görevin ekini siler.
+
+Params: attachmentId
+
+Yanıt (200): { msg: string }
+
+GET /stats
+
+Özet: Sistem istatistiklerini getirir.
+
+Yanıt (200): { userCount, activeUserCount, boardCount, taskCount }
+
+GET /activity
+
+Özet: Aktivite loglarını gelişmiş filtreleme ile getirir.
+
+Query: userId?, actionType?, startDate?, endDate?, page?, limit?
+
+Yanıt (200): { activities: [ ActivityLogWithDetails ], totalActivities, currentPage, totalPages }
+
+POST /bulk-message
+
+Özet: Toplu mesaj gönderir (Socket.io).
+
+Body: { message: string (Req), target: "all" | ["boardId1", ...] (Req) }
+
+Yanıt (200): { msg: string }
+
+12. Diğer Rotalar (/api/...)
+Yorumlar (/api/comments/:commentId):
+
+DELETE /: Yorumu siler (Yazan veya ADMIN). (Yukarıda Admin altında da var, yetki farklı)
+
+POST /reactions: Yoruma reaksiyon ekler/kaldırır (COMMENTER+). (Body: { emoji })
+
+Ekler (/api/attachments/:attachmentId):
+
+DELETE /: Eki siler (Yükleyen veya Creator/ADMIN). (Yukarıda Admin altında da var, yetki farklı)
+
+Aktivite (/api/activity):
+
+Rotalar /api/boards/:boardId/activity ve /api/tasks/:taskId/activity olarak tanımlandı.
+
+Reaksiyonlar (/api/reactions):
+
+Rotalar /api/tasks/:taskId/reactions ve /api/comments/:commentId/reactions olarak tanımlandı.
+
+Zaman Takibi (/api/timeEntry):
+
+Rotalar /api/tasks/:taskId/time-entries/... ve /api/user/me/time-entries olarak tanımlandı.
+
+Görünümler (/api/views):
+
+/api/calendar: Takvim verisi.
+
+/api/timeline: Gantt/Zaman Çizelgesi verisi.
+
+Raporlar (/api/reports):
+
+Rotalar /api/boards/:boardId/reports ve /api/reports/users/:userId olarak tanımlandı.
+
+Webhooks (/api/webhooks):
+
+POST /: Yeni webhook oluşturur (ADMIN). (Body: { targetUrl, eventTypes[], boardId })
+
+DELETE /:webhookId: Webhook'u siler (ADMIN).
+
+Bildirimler (/api/notifications):
+
+GET /: Bildirimleri listeler (Private). (Query: page?, limit?, unreadOnly?)
+
+PATCH /:notificationId/read: Okundu yapar (Private).
+
+POST /read-all: Tümünü okundu yapar (Private).
+
+13. WebSocket Olayları
+connection: Yeni istemci bağlanır (Token ile doğrulama yapılır).
+
+disconnect: İstemci ayrılır.
+
+join_board (Client -> Server): boardId - Pano odasına katılır.
+
+send_message (Client -> Server): { boardId, text } - Grup mesajı gönderir.
+
+receive_message (Server -> Client): MessageWithAuthor - Yeni grup mesajını alır.
+
+send_dm (Client -> Server): { receiverId, text } - Özel mesaj gönderir.
+
+receive_dm (Server -> Client): DirectMessageWithSender - Yeni özel mesajı alır (Gönderene ve Alıcıya).
+
+new_notification (Server -> Client): NotificationWithDetails - Yeni bildirimi alır (Sadece ilgili kullanıcıya).
+
+receive_bulk_message (Server -> Client): { text, sender, boardId? } - Admin duyurusunu alır.
+
+message_error, dm_error, error (Server -> Client): { msg: string } - Hata mesajlarını alır (Genellikle sadece gönderen istemciye).
