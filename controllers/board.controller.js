@@ -1,3 +1,4 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/board.controller.js
 const prisma = require('../lib/prisma');
 const { logActivity } = require('../utils/activityLogger');
 // Yeni yetkilendirme yardımcılarını import et
@@ -135,6 +136,13 @@ exports.getBoardById = async (req, res) => {
                   include: {
                     assignees: { select: { id: true, name: true, avatarUrl: true }},
                     images: true
+                  }
+                },
+                // GÜNCELLENDİ: Ekler (Attachments) buraya eklendi (İstek 4 için)
+                attachments: {
+                  orderBy: { uploadedAt: 'desc' },
+                  include: {
+                    uploadedBy: { select: { id: true, name: true, avatarUrl: true }}
                   }
                 },
                 _count: { select: { checklistItems: true, comments: true, attachments: true } }

@@ -1,3 +1,4 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/checklist.controller.js
 const prisma = require('../lib/prisma');
 const fs = require('fs'); // Dosya işlemleri için (resim silme)
 const path = require('path'); // Dosya yollarını birleştirmek için
@@ -70,6 +71,11 @@ exports.addChecklistItem = async (req, res) => {
         taskId: taskId,
         dueDate: dueDate ? new Date(dueDate) : null // dueDate eklendi
       },
+      // YENİ: Frontend'in ihtiyaç duyduğu tam veriyi döndür
+      include: {
+        assignees: { select: { id: true, name: true, avatarUrl: true }},
+        images: true
+      }
     });
     res.status(201).json(newItem);
   } catch (err) {
@@ -102,6 +108,11 @@ exports.toggleChecklistItem = async (req, res) => {
       data: {
         isCompleted: !item.isCompleted,
       },
+      // YENİ: Frontend'in ihtiyaç duyduğu tam veriyi döndür
+      include: {
+        assignees: { select: { id: true, name: true, avatarUrl: true }},
+        images: true
+      }
     });
     res.json(updatedItem);
   } catch (err) {
@@ -148,7 +159,11 @@ exports.assignToChecklistItem = async (req, res) => {
           connect: { id: assignUserId },
         },
       },
-      include: { assignees: { select: { id: true, name: true, avatarUrl: true }} }
+      // YENİ: Frontend'in ihtiyaç duyduğu tam veriyi döndür
+      include: { 
+        assignees: { select: { id: true, name: true, avatarUrl: true }},
+        images: true
+      }
     });
     res.json(updatedItem);
 
@@ -223,8 +238,13 @@ exports.unassignFromChecklistItem = async (req, res) => {
           disconnect: { id: unassignUserId },
         },
       },
-      // Atama kaldırıldıktan sonra güncel atananları döndürmeye gerek yok
-      // select: { assignees: true } // Veya boş döndür
+      // --- DÜZELTME ---
+      // Frontend'in cache'i güncellemesi için güncel veriyi döndür
+      include: { 
+        assignees: { select: { id: true, name: true, avatarUrl: true }},
+        images: true
+      }
+      // --- BİTİŞ ---
     });
     res.json(updatedItem); // Güncellenmiş item'ı döndür
   } catch (err) {
@@ -238,10 +258,15 @@ exports.addImagesToChecklistItem = async (req, res) => {
   const { itemId } = req.params;
   const userId = req.user.id;
   const files = req.files;
-  const urlPath = req.boardUrlPath;
+  const urlPath = req.boardUrlPath; // setUploadPath'ten gelir
 
-  if (!files || files.length === 0) { /*...*/ }
-  if (!urlPath) { /*...*/ }
+  if (!files || files.length === 0) {
+    return res.status(400).json({ msg: 'Yüklenecek dosya seçilmedi.' });
+  }
+  if (!urlPath) {
+     deleteUploadedFiles(files); // Dosyaları sil
+     return res.status(500).json({ msg: 'Sunucu hatası: Yükleme yolu ayarlanamadı.' });
+  }
 
   try {
     const item = await prisma.checklistItem.findUnique({
@@ -252,12 +277,22 @@ exports.addImagesToChecklistItem = async (req, res) => {
       }
     });
 
-    if (!item) { /* Hata ve dosya silme */ }
+    if (!item) { 
+      deleteUploadedFiles(files);
+      return res.status(404).json({ msg: 'Checklist elemanı bulunamadı.' });
+    }
     const hasAccess = await checkTaskAccess(userId, item.taskId);
-    if (!hasAccess) { /* Hata ve dosya silme */ }
+    if (!hasAccess) { 
+      deleteUploadedFiles(files);
+      return res.status(403).json({ msg: 'Bu işlem için yetkiniz yok.' });
+    }
 
     const existingImageCount = item._count.images;
-    if (existingImageCount + files.length > 5) { /* Hata ve dosya silme */ }
+    const MAX_IMAGES = 5; // uploadChecklist.js'deki limitle aynı olmalı
+    if (existingImageCount + files.length > MAX_IMAGES) { 
+      deleteUploadedFiles(files);
+      return res.status(400).json({ msg: `Bir alt görevde en fazla ${MAX_IMAGES} resim olabilir.` });
+    }
 
     const imagesToCreate = files.map(file => ({
       url: urlPath + file.filename,
@@ -294,10 +329,14 @@ exports.deleteChecklistImage = async (req, res) => {
         checklistItem: { select: { taskId: true } }
       }
     });
-    if (!image || !image.checklistItem) { /* Hata */ }
+    if (!image || !image.checklistItem) { 
+       return res.status(404).json({ msg: 'Resim veya ilişkili alt görev bulunamadı.' });
+    }
 
     const hasAccess = await checkTaskAccess(userId, image.checklistItem.taskId);
-    if (!hasAccess) { /* Hata */ }
+    if (!hasAccess) { 
+      return res.status(403).json({ msg: 'Bu resmi silme yetkiniz yok.' });
+    }
 
     await prisma.checklistImage.delete({ where: { id: imageId } });
     deletePhysicalFile(image.url); // Fiziksel dosyayı da sil
