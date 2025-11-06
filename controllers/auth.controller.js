@@ -18,12 +18,23 @@ exports.register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    // --- BURASI GÜNCELLENDİ ---
+    // E-postadan varsayılan bir kullanıcı adı oluştur (örn: "konsoltest" + 4 rastgele rakam)
+    const baseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+    const randomSuffix = Math.floor(Math.random() * 9000) + 1000;
+    const finalUsername = `${baseUsername}${randomSuffix}`;
+    // Not: Bu, 100% benzersizliği garanti etmez ama test için yeterlidir.
+    // Gerçek bir sistemde, bu username'in zaten var olup olmadığını kontrol eden bir döngü gerekir.
+    // --- GÜNCELLEME SONU ---
+
+
     // Yeni kullanıcı USER rolüyle oluşturulur (şemadaki varsayılan)
     user = await prisma.user.create({
       data: {
         email,
         name,
         password: hashedPassword,
+        username: finalUsername, // <-- YENİ EKLENEN SATIR
         // role: 'USER' // Varsayılan olduğu için belirtmeye gerek yok
       },
     });
@@ -42,10 +53,16 @@ exports.register = async (req, res) => {
     });
   } catch (err) {
     console.error(err.message);
+    // Hatayı daha net görmek için
+    if (err.code === 'P2002') { // Prisma Unique constraint violation
+        return res.status(400).json({ 
+            msg: 'Benzersizlik kuralı ihlali. Muhtemelen e-posta veya username zaten mevcut.',
+            error: err.meta.target 
+        });
+    }
     res.status(500).send('Sunucu Hatası');
   }
 };
-
 // 2. YEREL GİRİŞ (Email/Parola) - GÜNCELLENDİ
 exports.login = async (req, res) => {
   try {

@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const fs = require('fs'); // Dosya işlemleri için (eski resmi silmek için)
 const path = require('path');
 const { getUserRoleInBoard, hasRequiredRole } = require('../utils/authorization');
+const multer = require('multer'); // <-- EKSİK OLAN SATIR BU
 // 1. ŞİFRE YENİLEME (Mevcut Şifre ile)
 exports.changePassword = async (req, res) => {
   const { currentPassword, newPassword } = req.body;
@@ -51,26 +52,52 @@ exports.changePassword = async (req, res) => {
   }
 };
 
-// 2. İSİM DEĞİŞTİRME
 exports.updateProfileName = async (req, res) => {
   const { name } = req.body;
-  const userId = req.user.id;
-
-  if (!name || name.trim() === '') {
-    return res.status(400).json({ msg: 'İsim alanı boş olamaz.' });
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ msg: 'Geçerli bir isim giriniz.' });
   }
 
   try {
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
       data: { name: name.trim() },
-      select: { id: true, email: true, name: true, avatarUrl: true } // Güncellenmiş bilgileri döndür
+      select: { id: true, email: true, name: true, avatarUrl: true, role: true, username: true } // GÜNCELLENDİ
     });
-
-    res.json({ msg: 'İsim başarıyla güncellendi.', user: updatedUser });
-
+    res.json({ msg: 'İsim başarıyla güncellendi.', user });
   } catch (err) {
     console.error(err.message);
+    res.status(500).send('Sunucu Hatası');
+  }
+};
+
+exports.updateUsername = async (req, res) => {
+  const { username } = req.body;
+  const userId = req.user.id;
+
+  if (!username || username.trim().length < 3) {
+    return res.status(400).json({ msg: 'Kullanıcı adı en az 3 karakter olmalıdır.' });
+  }
+
+  try {
+    const existingUser = await prisma.user.findUnique({ where: { username: username.trim() } });
+    if (existingUser && existingUser.id !== userId) {
+      return res.status(400).json({ msg: 'Bu kullanıcı adı zaten kullanılıyor.' });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { username: username.trim() },
+      select: { id: true, email: true, name: true, avatarUrl: true, role: true, username: true } // GÜNCELLENDİ
+    });
+
+    res.json({ msg: 'Kullanıcı adı başarıyla güncellendi.', user: updatedUser });
+
+  } catch (err) {
+    if (err.code === 'P2002') { // Benzersizlik kuralı ihlali
+      return res.status(400).json({ msg: 'Bu kullanıcı adı zaten kullanılıyor.' });
+    }
+    console.error("updateUsername Hatası:", err.message);
     res.status(500).send('Sunucu Hatası');
   }
 };
@@ -103,17 +130,12 @@ exports.uploadProfileImage = async (req, res) => {
         }
       });
     }
-
-    // Yeni resmin URL'sini veritabanına kaydet
-    // req.file.path: "uploads/userID-timestamp.uzantı"
-    // Biz frontend'e bu resmin doğrudan erişilebilir URL'sini vermeliyiz.
-    // Bu genellikle '/uploads/userID-timestamp.uzantı' şeklinde olur.
-    const newAvatarUrl = '/uploads/' + req.file.filename;
+    const newAvatarUrl = '${HOST_URL}/uploads/' + req.file.filename; 
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { avatarUrl: newAvatarUrl },
-      select: { id: true, email: true, name: true, avatarUrl: true }
+      select: { id: true, email: true, name: true, avatarUrl: true, role: true, username: true }
     });
 
     res.json({ msg: 'Profil resmi başarıyla güncellendi.', user: updatedUser });
@@ -146,6 +168,7 @@ exports.getMe = async (req, res) => {
         createdAt: true,
         googleId: true, // Google ile bağlı olup olmadığını görmek için
         // İsteğe bağlı: Kullanıcının üye olduğu panoların ID'lerini vb. ekleyebilirsiniz
+        username: true // GÜNCELLENDİ
       }
     });
 
@@ -237,3 +260,4 @@ exports.getMyAssignedTasks = async (req, res) => {
         res.status(500).send('Sunucu Hatası');
     }
 };
+

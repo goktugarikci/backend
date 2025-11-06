@@ -113,7 +113,7 @@ model User {
 // --- YENİ ALAN ---
   username  String?  @unique // Kullanıcının @ ile bahsedilecek adı (opsiyonel ve benzersiz)
   password  String?
-  googleId  String?  @unique
+  googleId  String? 
   avatarUrl String?
   createdAt DateTime @default(now())
   role      UserRole @default(USER)
@@ -146,6 +146,17 @@ model User {
   assignedTaskIds        String[] @db.ObjectId
   assignedChecklistItems ChecklistItem[] @relation("ChecklistItemAssignees", fields: [assignedChecklistItemIds], references: [id])
   assignedChecklistItemIds String[]        @db.ObjectId
+
+
+  // Bir kullanıcının kabul ettiği arkadaşlar (Çift yönlü ilişki)
+  friends   User[]   @relation("Friendship", fields: [friendIds], references: [id])
+  friendIds String[] @db.ObjectId
+  friendOf  User[]   @relation("Friendship", fields: [friendOfIds], references: [id])
+  friendOfIds String[] @db.ObjectId
+
+  // Gönderilen ve alınan arkadaşlık istekleri
+  sentFriendRequests     FriendRequest[] @relation("SentRequests")
+  receivedFriendRequests FriendRequest[] @relation("ReceivedRequests")
 }
 
 model Board {
@@ -441,4 +452,29 @@ model DirectMessage {
   conversationId String       @db.ObjectId
 
   @@index([conversationId, createdAt]) // Konuşma geçmişini hızlı çekmek için
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  BLOCKED
+}
+
+model FriendRequest {
+  id          String              @id @default(auto()) @map("_id") @db.ObjectId
+  
+  // İsteği gönderen
+  requester   User                @relation("SentRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+  requesterId String              @db.ObjectId
+  
+  // İsteği alan
+  receiver    User                @relation("ReceivedRequests", fields: [receiverId], references: [id], onDelete: Cascade)
+  receiverId  String              @db.ObjectId
+  
+  status      FriendRequestStatus @default(PENDING)
+  createdAt   DateTime            @default(now())
+
+  @@unique([requesterId, receiverId]) // Bir kullanıcı diğerine sadece 1 istek gönderebilir
+  @@index([receiverId, status]) // Bir kullanıcının bekleyen isteklerini hızlıca bulmak için
 }

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth'); // JWT doğrulama
 const uploadMiddleware = require('../middleware/upload'); // Multer yükleme
-
+const multer = require('multer'); // <-- EKSİK OLAN SATIR BU
 // Kullanıcı kontrolcüsünü içe aktar
 const userController = require('../controllers/user.controller');
 
@@ -15,7 +15,7 @@ router.put('/change-password', authMiddleware, userController.changePassword);
 // @desc    Kullanıcının ismini günceller (giriş yapmış olmayı gerektirir)
 // @access  Private
 router.put('/update-name', authMiddleware, userController.updateProfileName);
-
+router.put('/update-username', authMiddleware, userController.updateUsername);
 router.get('/me', authMiddleware, userController.getMe);
 
 // @route   POST /api/user/profile-image

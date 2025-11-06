@@ -1,6 +1,6 @@
 // 1. Ortam Değişkenlerini Yükle (MUTLAKA EN ÜSTTE)
 require('dotenv').config();
-
+console.log("Sunucu başlıyor... JWT_SECRET kontrol ediliyor:", process.env.JWT_SECRET);
 // 2. Gerekli Modülleri Import Et
 const express = require('express');
 const cors = require('cors');
@@ -11,6 +11,10 @@ const { Server } = require("socket.io"); // Socket.io Server sınıfı
 const jwt = require('jsonwebtoken'); // Socket auth için
 const prisma = require('./lib/prisma'); // Prisma Client
 const dmController = require('./controllers/directMessage.controller'); // Özel Mesaj kontrolcüsü
+const multer = require('multer'); // <-- EKSİK OLAN SATIR BU
+const { getUserRoleInBoard, hasRequiredRole } = require('./utils/authorization');
+const { createNotification } = require('./utils/notifications'); // DM bildirimleri için (opsiyonel)
+
 
 // 3. Passport (Google OAuth) Yapılandırmasını Çalıştır
 require('./config/passport-setup');
@@ -71,10 +75,12 @@ app.use('/api', require('./routes/report.routes.js'));        // Raporlar (/api/
 app.use('/api', require('./routes/webhook.routes.js'));       // Webhook yönetimi (/api/webhooks)
 app.use('/api', require('./routes/notification.routes.js'));  // Bildirim yönetimi (/api/notifications)
 app.use('/api', require('./routes/directMessage.routes.js')); // Özel Mesaj rotaları (/api/dm/conversations)
+app.use('/api/friends', require('./routes/friend.routes.js'));
 
 
 // 10. Socket.io Bağlantı Mantığı (Doğrulama, Grup Sohbeti, Özel Sohbet, Bildirimler)
-const connectedUsers = {}; // { userId: socketId }
+const connectedUsers = {}; // { userId: socketId },
+app.set('connectedUsers', connectedUsers);
 
 io.on('connection', (socket) => {
   console.log(`Socket bağlandı: ${socket.id}`);
@@ -106,10 +112,10 @@ io.on('connection', (socket) => {
 
   // 2. Odaya (Panoya) katılma (Grup sohbeti için)
   socket.on('join_board', async (boardId) => {
-    // Güvenlik: Bu kullanıcının bu panoya erişimi var mı?
     try {
-        const hasAccess = await prisma.boardMembership.findFirst({ where: { userId: currentUserId, boardId: boardId }});
-        if(hasAccess) {
+        // GÜNCELLEME: 'getUserRoleInBoard' artık tanımlı
+        const userRole = await getUserRoleInBoard(currentUserId, boardId);
+        if(hasRequiredRole('VIEWER', userRole)) { // En az 'VIEWER' olmalı
             socket.join(boardId);
             console.log(`Socket ${socket.id} (User: ${currentUserId}), ${boardId} odasına katıldı.`);
         } else {
@@ -124,7 +130,6 @@ io.on('connection', (socket) => {
 
   // 3. Grup Mesajı gönderme (Grup sohbeti için)
   socket.on('send_message', async (data) => {
-    // Beklenen data: { boardId: string, text: string }
     const { boardId, text } = data;
     const authorId = currentUserId;
 
@@ -133,15 +138,15 @@ io.on('connection', (socket) => {
     }
 
     try {
-      // Güvenlik: Kullanıcının bu panoya mesaj gönderme yetkisi var mı? (En az COMMENTER)
-      const userRole = await getUserRoleInBoard(authorId, boardId); // Bu fonksiyonun utils'de olduğunu varsayıyoruz
+      // GÜNCELLEME: 'getUserRoleInBoard' artık tanımlı
+      const userRole = await getUserRoleInBoard(authorId, boardId);
       if (!hasRequiredRole('COMMENTER', userRole)) {
           socket.emit('message_error', { msg: 'Bu panoya mesaj gönderme yetkiniz yok.' }); return;
       }
 
       const newMessage = await prisma.message.create({
         data: { text: text, boardId: boardId, authorId: authorId },
-        include: { author: { select: { id: true, name: true, avatarUrl: true } } }
+        include: { author: { select: { id: true, name: true, avatarUrl: true, username: true } } } // 'username' eklendi
       });
       // Mesajı odadaki herkese (gönderen dahil) yayınla
       io.to(boardId).emit('receive_message', newMessage);
@@ -193,13 +198,8 @@ io.on('connection', (socket) => {
   });
 });
 
-// --- Anlık Bildirim Gönderme Mekanizması ---
-// Bu fonksiyonu utils/notifications.js içinden çağıracağız.
 const sendRealtimeNotification = (userId, notificationData) => {
-    if (userId && io) { // io objesinin var olduğundan emin ol
-        // Kullanıcının online olup olmadığını kontrol etmeye gerek yok,
-        // doğrudan kullanıcının kendi odasına (userId) gönderiyoruz.
-        // Eğer bağlıysa alır, değilse almaz.
+    if (userId && io) { 
         io.to(userId).emit('new_notification', notificationData);
         console.log(`Anlık bildirim ${userId} kullanıcısının odasına gönderildi.`);
     } else {
@@ -208,10 +208,6 @@ const sendRealtimeNotification = (userId, notificationData) => {
 }
 // Bu fonksiyonu app'e ekleyerek erişilebilir yapalım
 app.set('sendRealtimeNotification', sendRealtimeNotification);
-// utils/notifications.js içindeki createNotification fonksiyonunda:
-// const sendRealtimeNotification = require('../server').settings.sendRealtimeNotification; // Bu satır çalışmayabilir
-// En iyi yöntem: io objesini veya bu fonksiyonu createNotification'a parametre olarak geçmek
-// Veya bir Event Emitter kullanmak. Şimdilik createNotification içindeki konsol logu yeterli.
 
 // --- BİTİŞ: Anlık Bildirim ---
 
@@ -220,5 +216,3 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`Sunucu ${PORT} portunda başlatıldı.`));
 
 // --- Yardımcı Fonksiyonları (utils/authorization.js'den import edilmeli) ---
-// Bu fonksiyonlar server.js'de değil, ilgili kontrolcülerde kullanılır.
-// const { getUserRoleInBoard, hasRequiredRole } = require('./utils/authorization');

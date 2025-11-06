@@ -37,13 +37,15 @@ exports.getMessagesForBoard = async (req, res) => {
             id: true,
             name: true,
             avatarUrl: true,
+            username: true // YENİ: @name formatı için eklendi
           },
         },
       },
       orderBy: {
         createdAt: 'asc', // Eski mesajdan yeniye doğru sırala
       },
-      take: 100, // Son 100 mesajı al (performans için)
+      // DÜZELTME: 'take: 100' limiti kaldırıldı
+      // take: 100, 
     });
 
     res.json(messages);

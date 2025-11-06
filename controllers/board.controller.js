@@ -28,34 +28,67 @@ exports.createBoard = async (req, res) => {
         createdById: userId,
         members: { create: { userId: userId, role: 'ADMIN' } },
       },
+      // Pano oluşturulduktan sonra, BoardPage'in ihtiyaç duyduğu veriyi döndür
+      include: {
+        _count: { select: { members: true } },
+        members: { where: { userId: userId }, select: { role: true }}
+      }
     });
+
+    // Veriyi React'in (BoardPage) beklediği formata dönüştür
+    const responseBoard = {
+      ...newBoard,
+      membership: { role: newBoard.members[0].role },
+      _count: { members: newBoard._count.members } // _count'u _count objesi içine al
+    };
+    delete responseBoard.members; // 'members' dizisine artık gerek yok
+
     await logActivity(userId, newBoard.id, 'CREATE_BOARD', `"${newBoard.name}" panosunu oluşturdu`);
-    res.status(201).json(newBoard);
+    res.status(201).json(responseBoard);
   } catch (err) { console.error("createBoard Hatası:", err.message); res.status(500).send('Sunucu Hatası'); }
 };
 
-// 2. Kullanıcının Üye Olduğu Panoları Getir
+// 2. Kullanıcının Üye Olduğu Panoları Getir (BoardPage için DÜZELTİLMİŞ)
 exports.getMyBoards = async (req, res) => {
   const userId = req.user.id;
   try {
+    // 'BoardMembership' üzerinden sorguluyoruz
     const memberships = await prisma.boardMembership.findMany({
       where: { userId: userId },
-      include: { board: { select: { id: true, name: true, type: true, createdAt: true, _count: { select: { members: true }} } } },
+      include: {
+        board: { // Üyesi olduğumuz panonun detaylarını al
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            createdAt: true,
+            // description: true, // HATA: 'description' alanı şemada yok
+            _count: { select: { members: true } } // Üye sayısını al
+          }
+        }
+      },
       orderBy: { board: { createdAt: 'desc' } }
     });
-    const boards = memberships.map(m => m.board);
+
+    // Veriyi React'in (BoardPage.tsx) beklediği 'UserBoardSummary' formatına dönüştürelim
+    const boards = memberships.map(m => ({
+      ...m.board, // Board detayları (id, name, type, createdAt, _count)
+      membership: { // Kendi üyelik bilgimiz (rolümüz)
+        role: m.role
+      }
+    }));
+
     res.json(boards);
   } catch (err) { console.error("getMyBoards Hatası:", err.message); res.status(500).send('Sunucu Hatası'); }
 };
 
-// 3. Tek Bir Panonun Tüm Detaylarını Getir (Filtreleme/Sıralama ile)
+// 3. Tek Bir Panonun Tüm Detaylarını Getir (orderBy DÜZELTİLMİŞ)
 exports.getBoardById = async (req, res) => {
   const { boardId } = req.params;
   const userId = req.user.id;
   const { assignee, tag, priority, status, dueDateBefore, dueDateAfter, search, sortBy, sortOrder } = req.query;
 
   try {
-    // Güvenlik: Kullanıcının rolünü al (En az VIEWER olmalı)
     const userRole = await getUserRoleInBoard(userId, boardId);
     if (!hasRequiredRole('VIEWER', userRole)) {
       return res.status(403).json({ msg: 'Bu panoyu görüntüleme yetkiniz yok.' });
@@ -70,13 +103,16 @@ exports.getBoardById = async (req, res) => {
     if (dueDateBefore) taskWhereClause.dueDate = { ...taskWhereClause.dueDate, lte: new Date(dueDateBefore + 'T23:59:59.999Z') };
     if (dueDateAfter) taskWhereClause.dueDate = { ...taskWhereClause.dueDate, gte: new Date(dueDateAfter + 'T00:00:00.000Z') };
     if (search) taskWhereClause.OR = [ { title: { contains: search, mode: 'insensitive' } }, { description: { contains: search, mode: 'insensitive' } } ];
-    // taskWhereClause.isArchived = false; // Arşivleme eklenirse
-
-    let taskOrderByClause = { order: 'asc', createdAt: 'desc' }; // Varsayılan
+    
+    // --- KRİTİK HATA DÜZELTMESİ (orderBy ve TypeScript) ---
+    // JavaScript'te tip tanımı (: any[]) kaldırıldı.
+    let taskOrderByClause = [ { order: 'asc' }, { createdAt: 'desc' } ]; // Varsayılan (Array)
     const validSortFields = ['dueDate', 'priority', 'createdAt', 'title', 'order'];
     const orderDirection = sortOrder?.toLowerCase() === 'asc' ? 'asc' : 'desc';
-    if (sortBy && validSortFields.includes(sortBy)) taskOrderByClause = { [sortBy]: orderDirection };
-    // --- Bitiş ---
+    if (sortBy && validSortFields.includes(sortBy)) {
+        taskOrderByClause = [ { [sortBy]: orderDirection } ]; // Yeni sıralama (Array)
+    }
+    // --- BİTİŞ: HATA DÜZELTMESİ ---
 
     const boardDetails = await prisma.board.findUnique({
       where: { id: boardId },
@@ -89,7 +125,7 @@ exports.getBoardById = async (req, res) => {
           include: {
             tasks: {
               where: taskWhereClause,
-              orderBy: taskOrderByClause,
+              orderBy: taskOrderByClause, // Düzeltilmiş Array'i kullan
               include: {
                 assignees: { select: { id: true, name: true, avatarUrl: true }},
                 tags: true,
@@ -164,22 +200,30 @@ exports.removeMember = async (req, res) => {
       return res.status(403).json({ msg: 'Panodan üye çıkarma yetkiniz yok (Admin değilsiniz).' });
     }
 
-    const board = await prisma.board.findUnique({ where: {id: boardId}, select: {createdById: true}});
-    if (board && board.createdById === userIdToRemove) {
-         return res.status(400).json({ msg: 'Panoyu oluşturan kişi panodan çıkarılamaz.' });
-    }
-
-    const membershipToRemove = await prisma.boardMembership.findUnique({ where: { userId_boardId: { userId: userIdToRemove, boardId } } });
-    if (!membershipToRemove) return res.status(404).json({ msg: 'Kullanıcı üye değil.' });
-    if (membershipToRemove.role === 'ADMIN') {
-      const adminCount = await prisma.boardMembership.count({ where: { boardId: boardId, role: 'ADMIN' } });
-      if (adminCount <= 1) return res.status(400).json({ msg: 'Son yöneticiyi çıkaramazsınız.' });
+    // Panodan ayrılma (Kullanıcının kendisini çıkarması)
+    if (userIdToRemove === requestUserId) {
+        const membership = await prisma.boardMembership.findUnique({ where: { userId_boardId: { userId: userIdToRemove, boardId } } });
+        if (membership && membership.role === 'ADMIN') {
+            const adminCount = await prisma.boardMembership.count({ where: { boardId: boardId, role: 'ADMIN' } });
+            if (adminCount <= 1) return res.status(400).json({ msg: 'Son yönetici olarak panodan ayrılamazsınız. Önce başka birini yönetici yapın.' });
+        }
+    } else {
+        // Başkasını çıkarıyorsa (Admin yetkisi zaten kontrol edildi)
+        const board = await prisma.board.findUnique({ where: {id: boardId}, select: {createdById: true}});
+        if (board && board.createdById === userIdToRemove) {
+            return res.status(400).json({ msg: 'Panoyu oluşturan kişi panodan çıkarılamaz. (Sahipliği devretmelisiniz).' });
+        }
     }
 
     const userToRemoveInfo = await prisma.user.findUnique({where: {id: userIdToRemove}, select: {name: true}});
     await prisma.boardMembership.delete({ where: { userId_boardId: { userId: userIdToRemove, boardId } } });
-    await logActivity(requestUserId, boardId, 'REMOVE_BOARD_MEMBER', `"${userToRemoveInfo ? userToRemoveInfo.name : 'Bir kullanıcıyı'}" panodan çıkardı`);
-    res.json({ msg: 'Kullanıcı çıkarıldı.' });
+    
+    const logMessage = (userIdToRemove === requestUserId)
+      ? `Panodan ayrıldı`
+      : `"${userToRemoveInfo ? userToRemoveInfo.name : 'Bir kullanıcıyı'}" panodan çıkardı`;
+      
+    await logActivity(requestUserId, boardId, 'REMOVE_BOARD_MEMBER', logMessage);
+    res.json({ msg: 'İşlem başarılı.' });
   } catch (err) {
       if (err.code === 'P2025') return res.status(404).json({ msg: 'Kullanıcı bu panonun üyesi değil.' });
       console.error("removeMember Hatası:", err.message);
@@ -227,7 +271,6 @@ exports.deleteBoard = async (req, res) => {
       return res.status(403).json({ msg: 'Panoyu sadece oluşturan kişi silebilir.' });
     }
     await prisma.board.delete({ where: { id: boardId } });
-    // Pano silindiği için log atılmaz.
     res.json({ msg: 'Pano ve tüm içeriği başarıyla silindi.' });
   } catch (err) {
       if (err.code === 'P2025') return res.status(404).json({ msg: 'Pano bulunamadı.' });
