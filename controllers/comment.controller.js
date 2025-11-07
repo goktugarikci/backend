@@ -1,10 +1,10 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/comment.controller.js
 const prisma = require('../lib/prisma');
-const { logActivity } = require('../utils/activityLogger'); // Loglama yardımcısı
-const { getUserRoleInBoard, hasRequiredRole } = require('../utils/authorization'); // Yetkilendirme yardımcıları
-const { createNotification, sendMentionNotifications } = require('../utils/notifications'); // Bildirim yardımcıları
+const { logActivity } = require('../utils/activityLogger');
+const { getUserRoleInBoard, hasRequiredRole } = require('../utils/authorization');
+const { createNotification, sendMentionNotifications } = require('../utils/notifications');
 
 // --- YARDIMCI GÜVENLİK FONKSİYONU ---
-// Kullanıcının bir Görev üzerinde (belirtilen minimum rolle) yetkisi olup olmadığını kontrol eder
 const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
   if (!userId || !taskId) return false;
   try {
@@ -12,7 +12,7 @@ const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
       where: { id: taskId },
       select: { taskList: { select: { boardId: true } } },
     });
-    if (!task) return false; // Görev yoksa yetki de yok
+    if (!task) return false;
     const userRole = await getUserRoleInBoard(userId, task.taskList.boardId);
     return hasRequiredRole(requiredRole, userRole);
   } catch (error) {
@@ -22,48 +22,50 @@ const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
 };
 // --- BİTİŞ ---
 
-// 1. Bir Göreve Yorum Ekle (Yetki: COMMENTER veya üstü)
+// 1. Bir Göreve Yorum Ekle
 exports.createComment = async (req, res) => {
   const { taskId } = req.params;
   const { text } = req.body;
-  const userId = req.user.id; // Yorumu yapan kişi (authMiddleware'den)
+  const userId = req.user.id;
 
   if (!text || text.trim() === '') {
     return res.status(400).json({ msg: 'Yorum metni boş olamaz.' });
   }
 
   try {
-    // Güvenlik: Görevi ve panosunu bul
     const task = await prisma.task.findUnique({
       where: { id: taskId },
       select: {
-          title: true, // Bildirim ve log için
-          assigneeIds: true, // Bildirim için
-          createdById: true, // Bildirim için
+          title: true, 
+          assigneeIds: true, 
+          createdById: true, 
           taskList: { select: { boardId: true }}
       }
     });
     if (!task || !task.taskList) return res.status(404).json({ msg: 'İlişkili görev veya liste bulunamadı.' });
     const boardId = task.taskList.boardId;
 
-    // Yetki kontrolü: Yorum yapmak için en az COMMENTER olmalı
     if (!await checkBoardPermission(userId, boardId, 'COMMENTER')) {
       return res.status(403).json({ msg: 'Bu göreve yorum yapma yetkiniz yok.' });
     }
 
-    // Yorumu oluştur
     const newComment = await prisma.taskComment.create({
       data: {
         text: text.trim(),
         taskId: taskId,
         authorId: userId,
       },
-      include: { // Yanıtta yazar bilgisini döndür
-        author: { select: { id: true, name: true, avatarUrl: true } }
+      include: { 
+        author: { select: { id: true, name: true, avatarUrl: true } },
+        // YENİ: Oluşturulan yorumun (boş) reaksiyonlarını döndür
+        reactions: {
+            include: {
+                user: { select: { id: true, name: true }}
+            }
+        }
       }
     });
 
-    // Aktivite Logla
     await logActivity(userId, boardId, 'ADD_TASK_COMMENT', `"${newComment.text.substring(0, 30)}..." yorumunu ekledi`, taskId, null, newComment.id);
 
     // --- Bildirim Oluştur (Standart) ---
@@ -72,10 +74,9 @@ exports.createComment = async (req, res) => {
     const previewText = text.substring(0, 50) + (text.length > 50 ? '...' : '');
     const standardMessage = messageTemplate.replace('{preview}', previewText);
 
-    // Görevi oluşturan + atananlar (yorum yapan hariç)
     const recipients = new Set([task.createdById, ...task.assigneeIds]);
-    recipients.delete(userId); // Kendine bildirim gitmesin
-    recipients.delete(null); // Null ID'leri temizle
+    recipients.delete(userId); 
+    recipients.delete(null); 
 
     for (const recipientId of recipients) {
         if (recipientId) {
@@ -87,7 +88,7 @@ exports.createComment = async (req, res) => {
     // --- @Mention Bildirimi ---
     const mentionMessageTemplate = `{authorName} sizden "${task.title}" görevindeki bir yorumda bahsetti: {preview}`;
     await sendMentionNotifications(text, userId, mentionMessageTemplate.replace('{preview}', previewText), boardId, taskId, newComment.id);
-    // --- Bitiş: @Mention Bildirimi ---
+    // --- BİTİŞ: @Mention Bildirimi ---
 
     res.status(201).json(newComment);
   } catch (err) {
@@ -97,27 +98,29 @@ exports.createComment = async (req, res) => {
      }
 };
 
-// 2. Bir Görevin Yorumlarını Getir (Yetki: VIEWER veya üstü)
+// 2. Bir Görevin Yorumlarını Getir
 exports.getCommentsForTask = async (req, res) => {
   const { taskId } = req.params;
   const userId = req.user.id;
 
   try {
-    // Güvenlik: Kullanıcı bu görevi (ve yorumları) görebilir mi?
     if (!await checkTaskPermission(userId, taskId, 'VIEWER')) {
       return res.status(403).json({ msg: 'Bu yorumları görme yetkiniz yok.' });
     }
 
-    // Yorumları çek
     const comments = await prisma.taskComment.findMany({
       where: { taskId: taskId },
-      orderBy: { createdAt: 'asc' }, // Eskiden yeniye
+      orderBy: { createdAt: 'asc' }, 
       include: {
-        author: { select: { id: true, name: true, avatarUrl: true } }, // Yazar bilgisi
-        reactions: { // Reaksiyonları da getirelim (opsiyonel)
-            select: { emoji: true, userId: true } // Sadece emoji ve kimin verdiği
-            // Veya groupBy ile sayım yapılabilir
+        author: { select: { id: true, name: true, avatarUrl: true } }, 
+        
+        // === DÜZELTME (Reaksiyon hatası için) ===
+        reactions: { 
+          include: { // 'select' yerine 'include'
+            user: { select: { id: true, name: true } } // 'user' objesini ve içindekileri getir
+          }
         }
+        // === BİTİŞ ===
       }
     });
     res.json(comments);
