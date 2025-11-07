@@ -1,3 +1,4 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/routes/timeEntry.routes.js
 const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth'); // Tüm endpointler giriş gerektirir
@@ -31,8 +32,21 @@ router.get('/tasks/:taskId/time-entries', authMiddleware, timeEntryController.ge
 // @route   GET /api/user/me/time-entries
 // @desc    Giriş yapmış kullanıcının zaman kayıtlarını getirir (tarih aralığı, sayfalı)
 // @access  Private
-// Not: Bu rotayı user.routes.js'e de koyabilirdik, ama timeEntry ile ilgili olduğu için burada daha mantıklı.
 router.get('/user/me/time-entries', authMiddleware, timeEntryController.getTimeEntriesForUser);
+
+
+// === YENİ EKLENEN ROTASYONLAR (DÜZENLEME VE SİLME) ===
+
+// @route   PUT /api/time-entries/:entryId
+// @desc    Mevcut bir zaman girişini günceller (Sadece sahibi veya Pano Admini)
+// @access  Private
+router.put('/time-entries/:entryId', authMiddleware, timeEntryController.updateTimeEntry);
+
+// @route   DELETE /api/time-entries/:entryId
+// @desc    Mevcut bir zaman girişini siler (Sadece sahibi veya Pano Admini)
+// @access  Private
+router.delete('/time-entries/:entryId', authMiddleware, timeEntryController.deleteTimeEntry);
+// === BİTİŞ ===
 
 
 module.exports = router;

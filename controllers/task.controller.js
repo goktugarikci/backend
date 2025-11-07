@@ -1,11 +1,11 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/task.controller.js
 const prisma = require('../lib/prisma');
 const { logActivity } = require('../utils/activityLogger'); // Loglama yardımcısı
 const { getUserRoleInBoard, hasRequiredRole } = require('../utils/authorization'); // Yetkilendirme yardımcıları
-const { createNotification } = require('../utils/notifications'); // Bildirim yardımcısı
+const { createNotification } = require('../utils/notifications'); // GÜNCELLENDİ: Bildirim yardımcısı
 
 // --- YARDIMCI GÜVENLİK FONKSİYONLARI ---
 
-// Kullanıcının bir Pano üzerinde (belirtilen minimum rolle) yetkisi olup olmadığını kontrol eder
 const checkBoardPermission = async (userId, boardId, requiredRole = 'VIEWER') => {
   if (!userId || !boardId) return false;
   try {
@@ -17,7 +17,6 @@ const checkBoardPermission = async (userId, boardId, requiredRole = 'VIEWER') =>
   }
 };
 
-// Kullanıcının bir Görev üzerinde (belirtilen minimum rolle) yetkisi olup olmadığını kontrol eder
 const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
   if (!userId || !taskId) return false;
   try {
@@ -33,12 +32,11 @@ const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
   }
 };
 
-// Göreve temel erişimi kontrol eder (VIEWER yeterli)
 const checkTaskBasicAccess = async (userId, taskId) => checkTaskPermission(userId, taskId, 'VIEWER');
 // --- BİTİŞ: YARDIMCI FONKSİYONLAR ---
 
 
-// 1. Bir listeye yeni bir görev (kart) oluşturur (Yetki: MEMBER veya üstü)
+// 1. Bir listeye yeni bir görev (kart) oluşturur
 exports.createTask = async (req, res) => {
   const {
     title,
@@ -84,14 +82,23 @@ exports.createTask = async (req, res) => {
      }
 };
 
-// 2. Bir görevin tüm detaylarını günceller (Yetki: EDITOR veya üstü VEYA göreve atanan MEMBER)
+// 2. Bir görevin tüm detaylarını günceller (GÜNCELLENDİ: BİLDİRİM EKLENDİ)
 exports.updateTask = async (req, res) => {
   const { taskId } = req.params;
-  const userId = req.user.id;
+  const userId = req.user.id; // İşlemi yapan kullanıcı
   const { title, description, priority, startDate, dueDate, tagIds, approvalStatus } = req.body;
 
   try {
-    const task = await prisma.task.findUnique({ where: { id: taskId }, select: { title: true, assigneeIds: true, taskList: { select: { boardId: true }}} }); // Log için eski başlığı da alalım
+    const task = await prisma.task.findUnique({ 
+        where: { id: taskId }, 
+        select: { 
+            title: true, 
+            approvalStatus: true, // Eski durumu bilmek için
+            assigneeIds: true, 
+            createdById: true, // Görevi oluşturanı bilmek için
+            taskList: { select: { boardId: true }}
+        } 
+    });
     if (!task) return res.status(404).json({ msg: 'Görev bulunamadı.' });
     const boardId = task.taskList.boardId;
 
@@ -105,7 +112,7 @@ exports.updateTask = async (req, res) => {
     const dataToUpdate = {};
     let logDetails = [];
     if (title !== undefined) { dataToUpdate.title = title.trim(); if(dataToUpdate.title==='') return res.status(400).json({msg:'Başlık boş olamaz.'}); if(task.title !== dataToUpdate.title) logDetails.push('başlığı'); }
-    if (description !== undefined) { dataToUpdate.description = description; logDetails.push('açıklamayı'); } // Önceki değerle karşılaştırma eklenebilir
+    if (description !== undefined) { dataToUpdate.description = description; logDetails.push('açıklamayı'); }
     if (priority !== undefined && ['LOW', 'NORMAL', 'HIGH', 'URGENT'].includes(priority.toUpperCase())) { dataToUpdate.priority = priority.toUpperCase(); logDetails.push(`önceliği (${priority.toUpperCase()})`); }
     if (approvalStatus !== undefined && ['NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED'].includes(approvalStatus.toUpperCase())) { dataToUpdate.approvalStatus = approvalStatus.toUpperCase(); logDetails.push(`onay durumunu (${approvalStatus.toUpperCase()})`); }
     if (startDate !== undefined) { dataToUpdate.startDate = startDate ? new Date(startDate) : null; logDetails.push('başlangıç tarihini'); }
@@ -115,12 +122,32 @@ exports.updateTask = async (req, res) => {
     if (Object.keys(dataToUpdate).length === 0) return res.status(400).json({ msg: 'Güncellenecek alan belirtilmedi.' });
 
     const updatedTask = await prisma.task.update({ where: { id: taskId }, data: dataToUpdate, include: { tags: true, assignees: { select: {id: true, name: true, avatarUrl: true }}, taskList: { select: { boardId: true }} } });
+    
+    // --- GÜNCELLEME: Loglama ve Bildirim ---
+    const currentTitle = dataToUpdate.title ? dataToUpdate.title : task.title;
     if (logDetails.length > 0) {
-        // Eğer başlık değiştiyse yeni başlığı kullan, değişmediyse eskiyi (task.title) kullan
-        const currentTitle = dataToUpdate.title ? dataToUpdate.title : task.title;
         const logMessage = `"${currentTitle}" görevinin ${logDetails.join(', ')} güncelledi`;
         await logActivity(userId, updatedTask.taskList.boardId, 'UPDATE_TASK_DETAILS', logMessage, taskId);
     }
+    
+    // YENİ: Görev tamamlandı olarak işaretlendiyse bildirim gönder
+    if (dataToUpdate.approvalStatus === 'APPROVED' && task.approvalStatus !== 'APPROVED') {
+        const userWhoUpdated = await prisma.user.findUnique({ where: { id: userId }, select: { name: true }});
+        const message = `"${userWhoUpdated ? userWhoUpdated.name : 'Biri'}" "${currentTitle}" görevini tamamladı.`;
+        
+        // Görevi oluşturan + atananlar (işlemi yapan hariç)
+        const recipients = new Set([task.createdById, ...task.assigneeIds]);
+        recipients.delete(userId); // Kendine bildirim gitmesin
+        recipients.delete(null);
+
+        for (const recipientId of recipients) {
+            if (recipientId) {
+                await createNotification(recipientId, message, boardId, taskId);
+            }
+        }
+    }
+    // --- BİTİŞ: GÜNCELLEME ---
+
     res.json(updatedTask);
   } catch (err) {
       if (err.code === 'P2003' || err.code === 'P2025') return res.status(400).json({ msg: 'Geçersiz veri veya bulunamayan ilişki.' });
@@ -129,7 +156,7 @@ exports.updateTask = async (req, res) => {
      }
 };
 
-// 3. Bir görevi siler (Yetki: EDITOR veya üstü)
+// 3. Bir görevi siler
 exports.deleteTask = async (req, res) => {
   const { taskId } = req.params;
   const userId = req.user.id;
@@ -152,7 +179,7 @@ exports.deleteTask = async (req, res) => {
      }
 };
 
-// 4. Bir göreve kullanıcı atar (Yetki: EDITOR veya üstü)
+// 4. Bir göreve kullanıcı atar
 exports.assignTask = async (req, res) => {
   const { taskId } = req.params;
   const { assignUserId } = req.body;
@@ -170,12 +197,10 @@ exports.assignTask = async (req, res) => {
     if (!await getUserRoleInBoard(assignUserId, boardId)) {
       return res.status(400).json({ msg: 'Atanmak istenen kullanıcı panonun üyesi değil.' });
     }
-    // Zaten atanmış mı kontrolü (connect hata vermez ama bildirim/log için iyi)
     if (task.assigneeIds.includes(assignUserId)) {
         const currentTask = await prisma.task.findUnique({ where: {id: taskId}, include: { assignees: { select: {id: true, name: true, avatarUrl: true }} }});
         return res.status(400).json({ msg: 'Kullanıcı zaten bu göreve atanmış.', task: currentTask });
     }
-
 
     const updatedTask = await prisma.task.update({ where: { id: taskId }, data: { assignees: { connect: { id: assignUserId } } }, include: { assignees: { select: {id: true, name: true, avatarUrl: true }} } });
     const assignedUser = await prisma.user.findUnique({ where: {id: assignUserId}, select: {name: true}});
@@ -183,7 +208,6 @@ exports.assignTask = async (req, res) => {
 
     await logActivity(requestUserId, boardId, 'ASSIGN_TASK', `${assignedUser ? `"${assignedUser.name}" kullanıcısını` : 'Bir kullanıcıyı'} "${task.title}" görevine atadı`, taskId);
 
-    // Bildirim Oluştur
     if (requestUserId !== assignUserId) {
         await createNotification(
             assignUserId,
@@ -191,7 +215,6 @@ exports.assignTask = async (req, res) => {
             boardId, taskId
         );
     }
-
     res.json(updatedTask);
   } catch (err) {
       if (err.code === 'P2025') return res.status(404).json({ msg: 'Atanacak kullanıcı veya görev bulunamadı.' });
@@ -200,7 +223,7 @@ exports.assignTask = async (req, res) => {
      }
 };
 
-// 5. Bir görevden kullanıcı atamasını kaldırır (Yetki: EDITOR veya üstü)
+// 5. Bir görevden kullanıcı atamasını kaldırır
 exports.unassignTask = async (req, res) => {
   const { taskId } = req.params;
   const { unassignUserId } = req.body;
@@ -218,7 +241,7 @@ exports.unassignTask = async (req, res) => {
 
     const updatedTask = await prisma.task.update({ where: { id: taskId }, data: { assignees: { disconnect: { id: unassignUserId } } }, include: { assignees: { select: {id: true, name: true, avatarUrl: true }} } });
     const unassignedUser = await prisma.user.findUnique({ where: {id: unassignUserId}, select: {name: true}});
-    await logActivity(requestUserId, boardId, 'UNASSIGN_TASK', `${unassignedUser ? `"${unassignedUser.name}" kullanıcısının` : 'Bir kullanıcının'} "${task.title}" görevindeki atamasını kaldırdı`, taskId);
+    await logActivity(requestUserId, boardId, 'UNASSIGN_TASK', `${unassignedUser ? `"${unassignUser.name}" kullanıcısının` : 'Bir kullanıcının'} "${task.title}" görevindeki atamasını kaldırdı`, taskId);
     res.json(updatedTask);
   } catch (err) {
      if (err.code === 'P2025') {
@@ -231,7 +254,7 @@ exports.unassignTask = async (req, res) => {
    }
 };
 
-// 6. Görevi Listeler Arasında Taşıma (Yetki: EDITOR veya üstü)
+// 6. Görevi Listeler Arasında Taşıma
 exports.moveTask = async (req, res) => {
   const { taskId } = req.params;
   const { newTaskListId, newOrder } = req.body;
@@ -263,7 +286,7 @@ exports.moveTask = async (req, res) => {
      }
 };
 
-// 7. Görev Bağımlılığı Ekleme (Yetki: EDITOR veya üstü)
+// 7. Görev Bağımlılığı Ekleme
 exports.addDependency = async (req, res) => {
     const { taskId } = req.params;
     const { dependencyTaskId, type } = req.body;
@@ -282,8 +305,7 @@ exports.addDependency = async (req, res) => {
         const boardId = task.taskList.boardId;
 
         if (!await checkBoardPermission(userId, boardId, 'EDITOR')) { return res.status(403).json({ msg: 'Görev bağımlılığı ekleme yetkiniz yok.' }); }
-        // TODO: Döngüsel bağımlılık kontrolü (A -> B, B -> C, C -> A gibi)
-
+        
         let dataToUpdate = {}; let logDetail;
         if (type === 'blocking') { dataToUpdate = { dependentTasks: { connect: { id: dependencyTaskId } } }; logDetail = `"${depTask.title}" görevini engelliyor olarak ayarladı`; }
         else { dataToUpdate = { blockingTasks: { connect: { id: dependencyTaskId } } }; logDetail = `"${depTask.title}" görevini bekliyor olarak ayarladı`; }
@@ -298,7 +320,7 @@ exports.addDependency = async (req, res) => {
        }
 };
 
-// 8. Görev Bağımlılığını Kaldırma (Yetki: EDITOR veya üstü)
+// 8. Görev Bağımlılığını Kaldırma
 exports.removeDependency = async (req, res) => {
     const { taskId, dependencyTaskId } = req.params;
     const userId = req.user.id;
@@ -313,7 +335,6 @@ exports.removeDependency = async (req, res) => {
 
         if (!await checkBoardPermission(userId, boardId, 'EDITOR')) { return res.status(403).json({ msg: 'Görev bağımlılığını kaldırma yetkiniz yok.' }); }
 
-        // Her iki ilişkiyi de kes (transaction içinde)
         await prisma.$transaction([
             prisma.task.update({ where: { id: taskId }, data: { blockingTasks: { disconnect: { id: dependencyTaskId } }, dependentTasks: { disconnect: { id: dependencyTaskId } } } }),
             prisma.task.update({ where: { id: dependencyTaskId }, data: { blockingTasks: { disconnect: { id: taskId } }, dependentTasks: { disconnect: { id: taskId } } } })
@@ -327,12 +348,11 @@ exports.removeDependency = async (req, res) => {
        }
 };
 
-// 9. Görev Bağımlılıklarını Getirme (Yetki: VIEWER veya üstü)
+// 9. Görev Bağımlılıklarını Getirme
 exports.getDependencies = async (req, res) => {
     const { taskId } = req.params;
     const userId = req.user.id;
     try {
-        // Güvenlik: Göreve temel erişim yeterli
         if (!await checkTaskBasicAccess(userId, taskId)) return res.status(403).json({ msg: 'Yetkiniz yok.' });
 
         const dependencies = await prisma.task.findUnique({
