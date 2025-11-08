@@ -66,13 +66,16 @@ exports.sendFriendRequest = async (req, res) => {
       }
     });
 
-    // 4. Alıcıya bildirim gönder
+// 4. Alıcıya bildirim gönder
     const requesterUser = await prisma.user.findUnique({ where: { id: requesterId }, select: { name: true }});
-    const notification = await createNotification(
+    
+    // DÜZELTME: Anlık Bildirim Gönder
+    const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
+    await createNotification(
       receiver.id,
       `"${requesterUser.name}" size bir arkadaşlık isteği gönderdi.`,
-      null, // boardId
-      null  // taskId
+      null, null, null,
+      sendRealtimeNotification // Soket fonksiyonunu ilet
     );
     
     // DÜZELTME: Anlık Bildirim Gönder
@@ -185,23 +188,20 @@ exports.respondToRequest = async (req, res) => {
       
       // Bildirim gönder
       const receiverUser = await prisma.user.findUnique({ where: { id: receiverId }, select: { name: true }});
-      const notification = await createNotification(requesterId, `"${receiverUser.name}" arkadaşlık isteğinizi kabul etti!`, null, null);
       
-      // DÜZELTME: Anlık Bildirim Gönder
-      if (notification) {
-        const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
-        if (sendRealtimeNotification) {
-            sendRealtimeNotification(requesterId, notification);
-        }
-      }
+// DÜZELTME: Anlık Bildirim Gönder
+      const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
+      await createNotification(
+          requesterId, 
+          `"${receiverUser.name}" arkadaşlık isteğinizi kabul etti!`, 
+          null, null, null,
+          sendRealtimeNotification // Soket fonksiyonunu ilet
+      );
       
       res.json({ msg: 'Arkadaşlık isteği kabul edildi.' });
 
     } else {
-      // 3. İsteği REDDET (Kaydı silmek daha temizdir)
-      await prisma.friendRequest.delete({
-        where: { id: requestId }
-      });
+      await prisma.friendRequest.delete({ where: { id: requestId } });
       res.json({ msg: 'Arkadaşlık isteği reddedildi.' });
     }
 
@@ -210,7 +210,6 @@ exports.respondToRequest = async (req, res) => {
     res.status(500).send('Sunucu Hatası');
   }
 };
-
 /**
  * 4. Arkadaş Listesini Getirme (Online Statü ile)
  * @route GET /api/friends

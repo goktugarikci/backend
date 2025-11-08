@@ -11,12 +11,8 @@ const checkBoardPermission = async (userId, boardId, requiredRole = 'VIEWER') =>
   try {
     const userRole = await getUserRoleInBoard(userId, boardId);
     return hasRequiredRole(requiredRole, userRole);
-  } catch (error) {
-    console.error(`checkBoardPermission error for board ${boardId}:`, error);
-    return false;
-  }
+  } catch (error) { console.error(`checkBoardPermission error:`, error); return false; }
 };
-
 const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
   if (!userId || !taskId) return false;
   try {
@@ -24,12 +20,9 @@ const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
       where: { id: taskId },
       select: { taskList: { select: { boardId: true } } },
     });
-    if (!task) return false; // Görev yoksa yetki de yok
+    if (!task) return false; 
     return await checkBoardPermission(userId, task.taskList.boardId, requiredRole);
-  } catch (error) {
-    console.error(`checkTaskPermission error for task ${taskId}:`, error);
-    return false;
-  }
+  } catch (error) { console.error(`checkTaskPermission error:`, error); return false; }
 };
 
 const checkTaskBasicAccess = async (userId, taskId) => checkTaskPermission(userId, taskId, 'VIEWER');
@@ -179,7 +172,7 @@ exports.deleteTask = async (req, res) => {
      }
 };
 
-// 4. Bir göreve kullanıcı atar
+// 4. Bir göreve kullanıcı atar (BİLDİRİM DÜZELTMESİ)
 exports.assignTask = async (req, res) => {
   const { taskId } = req.params;
   const { assignUserId } = req.body;
@@ -202,19 +195,29 @@ exports.assignTask = async (req, res) => {
         return res.status(400).json({ msg: 'Kullanıcı zaten bu göreve atanmış.', task: currentTask });
     }
 
+
     const updatedTask = await prisma.task.update({ where: { id: taskId }, data: { assignees: { connect: { id: assignUserId } } }, include: { assignees: { select: {id: true, name: true, avatarUrl: true }} } });
     const assignedUser = await prisma.user.findUnique({ where: {id: assignUserId}, select: {name: true}});
     const requestingUser = await prisma.user.findUnique({ where: {id: requestUserId}, select: {name: true}});
 
     await logActivity(requestUserId, boardId, 'ASSIGN_TASK', `${assignedUser ? `"${assignedUser.name}" kullanıcısını` : 'Bir kullanıcıyı'} "${task.title}" görevine atadı`, taskId);
 
+    // === BİLDİRİM DÜZELTMESİ ===
     if (requestUserId !== assignUserId) {
+        // 1. Anlık bildirim fonksiyonunu al
+        const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
+        // 2. Fonksiyonu 'createNotification'a ilet
         await createNotification(
             assignUserId,
             `"${requestingUser ? requestingUser.name : 'Biri'}" sizi "${task.title}" görevine atadı.`,
-            boardId, taskId
+            boardId, 
+            taskId,
+            null, // commentId
+            sendRealtimeNotification // Soket fonksiyonu
         );
     }
+    // === BİTİŞ ===
+
     res.json(updatedTask);
   } catch (err) {
       if (err.code === 'P2025') return res.status(404).json({ msg: 'Atanacak kullanıcı veya görev bulunamadı.' });

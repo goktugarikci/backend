@@ -1,16 +1,17 @@
-// utils/notifications.js
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/utils/notifications.js
 const prisma = require('../lib/prisma');
 
 /**
- * Belirli bir kullanıcı için yeni bir bildirim oluşturur.
+ * Belirli bir kullanıcı için yeni bir bildirim oluşturur VE anlık olarak gönderir.
  * @param {string} userId - Bildirimi alacak kullanıcının ID'si.
  * @param {string} message - Bildirim mesajı.
- * @param {string | null} boardId - Bildirimin ilgili olduğu Pano ID'si (varsa).
- * @param {string | null} taskId - Bildirimin ilgili olduğu Görev ID'si (varsa).
- * @param {string | null} commentId - Bildirimin ilgili olduğu Yorum ID'si (varsa).
+ * @param {string | null} boardId - İlgili Pano ID'si.
+ * @param {string | null} taskId - İlgili Görev ID'si.
+ * @param {string | null} commentId - İlgili Yorum ID'si.
+ * @param {function | null} sendRealtimeNotification - (Opsiyonel) server.js'den gelen anlık bildirim fonksiyonu.
  * @returns {Promise<object | null>} Oluşturulan bildirim objesi veya hata durumunda null.
  */
-async function createNotification(userId, message, boardId = null, taskId = null, commentId = null) {
+async function createNotification(userId, message, boardId = null, taskId = null, commentId = null, sendRealtimeNotification = null) {
     if (!userId || !message) {
         console.error("Bildirim oluşturulamadı: userId veya message eksik.");
         return null;
@@ -25,15 +26,23 @@ async function createNotification(userId, message, boardId = null, taskId = null
                 taskId: taskId || undefined,
                 commentId: commentId || undefined,
                 isRead: false,
+            },
+            // DÜZELTME: Anlık bildirimde 'include' gerekir (Frontend'in ihtiyacı olan)
+            include: {
+                task: { select: { id: true, title: true } },
+                board: { select: { id: true, name: true } },
+                comment: { select: { id: true } }
             }
         });
 
-        // --- WebSocket ile Anlık Bildirim Gönderme ---
-        // server.js'den 'io' instance'ını almanın bir yolunu bulmamız lazım.
-        // Ya global hale getireceğiz (pek önerilmez) ya da bu fonksiyona parametre olarak geçeceğiz.
-        // Şimdilik sadece loglayalım. server.js güncellemesinde WebSocket'i ekleriz.
-        console.log(`Anlık Bildirim Gönderilecek (Kullanıcı: ${userId}): ${message}`);
-        // io.to(userId).emit('new_notification', newNotification); // -> Bu satırı server.js'de handle edeceğiz
+        // --- DÜZELTME: WebSocket ile Anlık Bildirim Gönderme ---
+        if (sendRealtimeNotification) {
+            sendRealtimeNotification(userId, newNotification);
+            console.log(`Anlık Bildirim Gönderildi (Kullanıcı: ${userId}): ${message}`);
+        } else {
+             console.log(`Bildirim DB'ye kaydedildi (Socket kapalı): ${userId}`);
+        }
+        // --- BİTİŞ ---
 
         return newNotification;
 
@@ -44,36 +53,27 @@ async function createNotification(userId, message, boardId = null, taskId = null
 }
 
 /**
- * Verilen metin içindeki @bahsetmelerini bulur, ilgili kullanıcıları
- * veritabanından çeker ve onlara bildirim gönderir.
- * @param {string} text - @bahsetmeleri içerebilecek metin (yorum, açıklama vb.).
- * @param {string} authorId - Metni yazan kullanıcının ID'si (kendine bildirim gitmesin).
- * @param {string} notificationMessageTemplate - Bildirim mesajı şablonu (örn: "{authorName} sizden bahsetti: {preview}").
- * @param {string} boardId - İlgili Pano ID'si.
- * @param {string | null} taskId - İlgili Görev ID'si (varsa).
- * @param {string | null} commentId - İlgili Yorum ID'si (varsa).
+ * @param {function | null} sendRealtimeNotification - (DÜZELTME) Anlık bildirim fonksiyonu eklendi.
  */
-async function sendMentionNotifications(text, authorId, notificationMessageTemplate, boardId, taskId = null, commentId = null) {
+async function sendMentionNotifications(text, authorId, notificationMessageTemplate, boardId, taskId = null, commentId = null, sendRealtimeNotification = null) {
     if (!text) return;
 
-    // Basit @kullaniciadi regex'i (sadece harf, rakam ve _)
+    // Basit @kullaniciadi regex'i
     const mentionRegex = /@(\w+)/g;
     const mentionedUsernames = [...text.matchAll(mentionRegex)].map(match => match[1]);
 
     if (mentionedUsernames.length === 0) return;
 
     try {
-        // Bahsedilen kullanıcıları DB'den bul
         const mentionedUsers = await prisma.user.findMany({
             where: {
                 username: { in: mentionedUsernames },
-                isActive: true, // Sadece aktif kullanıcılara bildirim gönder
-                id: { not: authorId } // Yazar kendine bildirim almasın
+                isActive: true, 
+                id: { not: authorId } 
             },
-            select: { id: true } // Sadece ID'leri yeterli
+            select: { id: true } 
         });
 
-        // Bildirim mesajını hazırla
         const author = await prisma.user.findUnique({where: {id: authorId}, select: {name: true}});
         const authorName = author ? author.name : 'Bir kullanıcı';
         const preview = text.substring(0, 50) + (text.length > 50 ? '...' : '');
@@ -81,13 +81,16 @@ async function sendMentionNotifications(text, authorId, notificationMessageTempl
                             .replace('{authorName}', authorName)
                             .replace('{preview}', preview);
 
-        // Bulunan her kullanıcıya bildirim gönder
         for (const user of mentionedUsers) {
-            // Güvenlik: Bahsedilen kullanıcının panoya erişimi var mı? Kontrolü eklenebilir!
-            // const mentionedUserRole = await getUserRoleInBoard(user.id, boardId);
-            // if (hasRequiredRole('VIEWER', mentionedUserRole)) {
-                 await createNotification(user.id, message, boardId, taskId, commentId);
-            // }
+            // DÜZELTME: 'sendRealtimeNotification' fonksiyonunu 'createNotification'a ilet
+             await createNotification(
+                 user.id, 
+                 message, 
+                 boardId, 
+                 taskId, 
+                 commentId, 
+                 sendRealtimeNotification // Fonksiyonu buraya ekle
+             );
         }
 
     } catch (error) {
@@ -95,4 +98,4 @@ async function sendMentionNotifications(text, authorId, notificationMessageTempl
     }
 }
 
-module.exports = { createNotification, sendMentionNotifications }; // Yeni fonksiyonu ekle
+module.exports = { createNotification, sendMentionNotifications };
