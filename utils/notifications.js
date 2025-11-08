@@ -51,7 +51,6 @@ async function createNotification(userId, message, boardId = null, taskId = null
 async function sendMentionNotifications(text, authorId, notificationMessageTemplate, boardId, taskId = null, commentId = null, sendRealtimeNotification = null) {
     if (!text) return;
 
-    // Basit @kullaniciadi regex'i
     const mentionRegex = /@(\w+)/g;
     const mentionedUsernames = [...text.matchAll(mentionRegex)].map(match => match[1]);
 
@@ -75,7 +74,6 @@ async function sendMentionNotifications(text, authorId, notificationMessageTempl
                             .replace('{preview}', preview);
 
         for (const user of mentionedUsers) {
-            // DÜZELTME: 'sendRealtimeNotification' fonksiyonunu 'createNotification'a ilet
              await createNotification(
                  user.id, 
                  message, 

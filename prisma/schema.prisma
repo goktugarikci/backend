@@ -113,7 +113,7 @@ model User {
 // --- YENİ ALAN ---
   username  String?  @unique // Kullanıcının @ ile bahsedilecek adı (opsiyonel ve benzersiz)
   password  String?
-  googleId  String? 
+  googleId  String?    
   avatarUrl String?
   createdAt DateTime @default(now())
   role      UserRole @default(USER)

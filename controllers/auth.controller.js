@@ -1,3 +1,4 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/auth.controller.js
 const prisma = require('../lib/prisma');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -18,24 +19,25 @@ exports.register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // --- BURASI GÜNCELLENDİ ---
-    // E-postadan varsayılan bir kullanıcı adı oluştur (örn: "konsoltest" + 4 rastgele rakam)
+    // E-postadan varsayılan bir kullanıcı adı oluştur
     const baseUsername = email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
     const randomSuffix = Math.floor(Math.random() * 9000) + 1000;
-    const finalUsername = `${baseUsername}${randomSuffix}`;
-    // Not: Bu, 100% benzersizliği garanti etmez ama test için yeterlidir.
-    // Gerçek bir sistemde, bu username'in zaten var olup olmadığını kontrol eden bir döngü gerekir.
-    // --- GÜNCELLEME SONU ---
+    let finalUsername = `${baseUsername}${randomSuffix}`;
 
+    // Kullanıcı adının benzersiz olduğundan emin ol (çok düşük bir ihtimal de olsa)
+    let usernameExists = await prisma.user.findUnique({ where: { username: finalUsername } });
+    while (usernameExists) {
+        const newSuffix = Math.floor(Math.random() * 9000) + 1000;
+        finalUsername = `${baseUsername}${newSuffix}`;
+        usernameExists = await prisma.user.findUnique({ where: { username: finalUsername } });
+    }
 
-    // Yeni kullanıcı USER rolüyle oluşturulur (şemadaki varsayılan)
     user = await prisma.user.create({
       data: {
         email,
         name,
         password: hashedPassword,
-        username: finalUsername, // <-- YENİ EKLENEN SATIR
-        // role: 'USER' // Varsayılan olduğu için belirtmeye gerek yok
+        username: finalUsername, // Benzersiz kullanıcı adı eklendi
       },
     });
 
@@ -48,35 +50,38 @@ exports.register = async (req, res) => {
     };
     jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: 3600 }, (err, token) => {
       if (err) throw err;
-      // Yanıta rolü de ekle
       res.status(201).json({ token, role: user.role });
     });
   } catch (err) {
     console.error(err.message);
-    // Hatayı daha net görmek için
-    if (err.code === 'P2002') { // Prisma Unique constraint violation
+    if (err.code === 'P2002') { 
         return res.status(400).json({ 
-            msg: 'Benzersizlik kuralı ihlali. Muhtemelen e-posta veya username zaten mevcut.',
+            msg: 'Benzersizlik kuralı ihlali. E-posta veya kullanıcı adı zaten mevcut.',
             error: err.meta.target 
         });
     }
     res.status(500).send('Sunucu Hatası');
   }
 };
-// 2. YEREL GİRİŞ (Email/Parola) - GÜNCELLENDİ
+
+// 2. YEREL GİRİŞ (Email/Parola)
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Kullanıcıyı rolüyle birlikte çek
     const user = await prisma.user.findUnique({ where: { email } });
 
     if (!user) {
       return res.status(400).json({ msg: 'Geçersiz kimlik bilgileri' });
     }
 
+    // DÜZELTME: Aktif olmayan kullanıcılar giriş yapamasın
+    if (!user.isActive) {
+         return res.status(403).json({ msg: 'Hesabınız bir yönetici tarafından devre dışı bırakıldı.' });
+    }
+
     if (!user.password) {
-      return res.status(400).json({ msg: 'Bu hesap Google ile oluşturulmuş. Lütfen Google ile giriş yapın veya (giriş yaptıktan sonra) hesap ayarlarınızdan bir parola belirleyin.' });
+      return res.status(400).json({ msg: 'Bu hesap Google ile oluşturulmuş. Lütfen Google ile giriş yapın.' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -84,22 +89,20 @@ exports.login = async (req, res) => {
       return res.status(400).json({ msg: 'Geçersiz kimlik bilgileri' });
     }
 
-    // Token oluştur (payload'a 'role' ekle)
     const payload = {
       user: {
         id: user.id,
-        role: user.role // <-- GÜNCELLEME: Rolü payload'a ekle
+        role: user.role 
       },
     };
 
     jwt.sign(
       payload,
       process.env.JWT_SECRET,
-      { expiresIn: 3600 }, // 1 saat
+      { expiresIn: '1h' }, // 1 saat
       (err, token) => {
         if (err) throw err;
-        // Yanıta 'role' bilgisini de ekle
-        res.json({ token, role: user.role }); // <-- GÜNCELLEME: Yanıta rolü ekle
+        res.json({ token, role: user.role }); 
       }
     );
   } catch (err) {
@@ -110,27 +113,30 @@ exports.login = async (req, res) => {
 
 // 3. GOOGLE OAUTH 2.0 GERİ DÖNÜŞ (CALLBACK) KONTROLCÜSÜ
 exports.googleCallback = (req, res) => {
-  // Passport stratejisi (passport-setup.js) çalıştı ve 'req.user' objesini verdi
-  // (req.user objesi artık veritabanından gelen rol bilgisini de içermeli)
+  // passport-setup.js (yukarıdaki dosya) çalıştı ve 'req.user' objesini verdi.
+  
+  // DÜZELTME: Pasif kullanıcılar giriş yapamasın
+  if (!req.user.isActive) {
+      return res.redirect(`${process.env.CLIENT_URL}/login-error?error=account_disabled`);
+  }
 
   const payload = {
     user: {
       id: req.user.id,
-      role: req.user.role // <-- Rolü payload'a ekle
+      role: req.user.role // 'role' bilgisi 'req.user' içinde mevcut
     },
   };
 
   jwt.sign(
     payload,
     process.env.JWT_SECRET,
-    { expiresIn: '1h' }, // Token geçerlilik süresi
+    { expiresIn: '1h' }, // 1 saat
     (err, token) => {
       if (err) {
           console.error("JWT imzalama hatası:", err);
           return res.redirect(`${process.env.CLIENT_URL}/login-error?error=jwt_sign_failed`);
       }
       // Kullanıcıyı token ile birlikte frontend'e yönlendir
-      // Frontend (AuthCallbackPage.tsx) bu token'ı yakalayacak
       res.redirect(`${process.env.CLIENT_URL}/auth/callback?token=${token}`);
     }
   );
