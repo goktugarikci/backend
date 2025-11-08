@@ -172,7 +172,6 @@ exports.deleteTask = async (req, res) => {
      }
 };
 
-// 4. Bir göreve kullanıcı atar (BİLDİRİM DÜZELTMESİ)
 exports.assignTask = async (req, res) => {
   const { taskId } = req.params;
   const { assignUserId } = req.body;

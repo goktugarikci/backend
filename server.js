@@ -1,7 +1,6 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/server.js
 // 1. Ortam Değişkenlerini Yükle (MUTLAKA EN ÜSTTE)
 require('dotenv').config();
-console.log("Sunucu başlıyor... JWT_SECRET kontrol ediliyor:", process.env.JWT_SECRET);
-// 2. Gerekli Modülleri Import Et
 const express = require('express');
 const cors = require('cors');
 const passport = require('passport');
@@ -10,11 +9,9 @@ const http = require('http'); // Socket.io için gerekli
 const { Server } = require("socket.io"); // Socket.io Server sınıfı
 const jwt = require('jsonwebtoken'); // Socket auth için
 const prisma = require('./lib/prisma'); // Prisma Client
-const dmController = require('./controllers/directMessage.controller'); // Özel Mesaj kontrolcüsü
-const multer = require('multer'); // <-- EKSİK OLAN SATIR BU
+const dmController = require('./controllers/directMessage.controller');
 const { getUserRoleInBoard, hasRequiredRole } = require('./utils/authorization');
-const { createNotification } = require('./utils/notifications'); // DM bildirimleri için (opsiyonel)
-
+const { createNotification } = require('./utils/notifications'); // DM bildirimleri için
 
 // 3. Passport (Google OAuth) Yapılandırmasını Çalıştır
 require('./config/passport-setup');
@@ -27,31 +24,25 @@ const server = http.createServer(app); // Express'i HTTP sunucusuna sar
 const io = new Server(server, {
   cors: {
     origin: process.env.CLIENT_URL, // Frontend adresiniz (.env dosyasından)
-    optionsSuccessStatus: 200,
-    methods: ["GET", "POST"] // İzin verilen HTTP metodları
+    methods: ["GET", "POST"]
   }
 });
 
 // 6. Socket.io Instance'ını ve Diğer Gerekli Objeleri Express Uygulamasına Ekle
-// Bu sayede kontrolcüler io objesine erişebilir (örn: toplu mesaj için)
 app.set('socketio', io);
 
 // 7. Genel Middleware'leri Uygula
 app.use(cors({
-  origin: process.env.CLIENT_URL // Sadece belirlediğiniz frontend'den gelen isteklere izin ver
+  origin: process.env.CLIENT_URL
 }));
-app.use(express.json()); // Gelen JSON body'lerini parse et
-app.use(passport.initialize()); // Passport'u başlat
-
-// Proxy Arkasındaysanız Güven Ayarı (Opsiyonel)
-// app.set('trust proxy', 1);
+app.use(express.json()); 
+app.use(passport.initialize()); 
 
 // İstek Loglama Middleware'i
 const requestLogger = require('./middleware/requestLogger');
 app.use(requestLogger);
 
 // 8. Statik Dosya Sunucusu (Yüklenen Resimler İçin)
-// '/uploads' URL'sini projenin kök dizinindeki 'uploads/' klasörüne yönlendirir
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // 9. API Rotalarını Tanımla
@@ -62,19 +53,19 @@ app.use('/api/tags', require('./routes/tag.routes.js'));
 app.use('/api/tasklists', require('./routes/taskList.routes.js'));
 app.use('/api/tasks', require('./routes/task.routes.js'));
 app.use('/api/checklist', require('./routes/checklist.routes.js'));
-app.use('/api/messages', require('./routes/message.routes.js'));   // Grup sohbet geçmişi
-app.use('/api/support', require('./routes/support.routes.js'));   // Destek biletleri
-app.use('/api/admin', require('./routes/admin.routes.js'));     // Admin endpoint'leri
-app.use('/api', require('./routes/comment.routes.js'));         // Görev yorumları (/api/tasks/:taskId/comments)
-app.use('/api', require('./routes/attachment.routes.js'));    // Görev ekleri (/api/tasks/:taskId/attachments)
-app.use('/api', require('./routes/activity.routes.js'));      // Aktivite logları (/api/boards/:boardId/activity)
-app.use('/api', require('./routes/reaction.routes.js'));      // Reaksiyonlar (/api/tasks/:taskId/reactions)
-app.use('/api', require('./routes/timeEntry.routes.js'));     // Zaman takibi (/api/tasks/:taskId/time-entries)
-app.use('/api', require('./routes/view.routes.js'));          // Takvim & Zaman Çizelgesi (/api/calendar, /api/timeline)
-app.use('/api', require('./routes/report.routes.js'));        // Raporlar (/api/boards/:boardId/reports)
-app.use('/api', require('./routes/webhook.routes.js'));       // Webhook yönetimi (/api/webhooks)
-app.use('/api', require('./routes/notification.routes.js'));  // Bildirim yönetimi (/api/notifications)
-app.use('/api', require('./routes/directMessage.routes.js')); // Özel Mesaj rotaları (/api/dm/conversations)
+app.use('/api/messages', require('./routes/message.routes.js'));   
+app.use('/api/support', require('./routes/support.routes.js'));   
+app.use('/api/admin', require('./routes/admin.routes.js'));     
+app.use('/api', require('./routes/comment.routes.js'));         
+app.use('/api', require('./routes/attachment.routes.js'));    
+app.use('/api', require('./routes/activity.routes.js'));      
+app.use('/api', require('./routes/reaction.routes.js'));      
+app.use('/api', require('./routes/timeEntry.routes.js'));     
+app.use('/api', require('./routes/view.routes.js'));          
+app.use('/api', require('./routes/report.routes.js'));        
+app.use('/api', require('./routes/webhook.routes.js'));       
+app.use('/api', require('./routes/notification.routes.js'));  
+app.use('/api/dm', require('./routes/directMessage.routes.js')); 
 app.use('/api/friends', require('./routes/friend.routes.js'));
 
 
@@ -84,38 +75,35 @@ app.set('connectedUsers', connectedUsers);
 
 io.on('connection', (socket) => {
   console.log(`Socket bağlandı: ${socket.id}`);
-  let currentUserId = null; // Bu sokete bağlı doğrulanmış kullanıcı ID'si
+  let currentUserId = null; 
 
-  // 1. Kullanıcı Kimliğini Doğrula (Handshake sırasında token ile)
+  // 1. Kullanıcı Kimliğini Doğrula
   const token = socket.handshake.auth.token;
   if (token) {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      currentUserId = decoded.user.id; // Token'dan userId'yi al
-      connectedUsers[currentUserId] = socket.id; // Kullanıcıyı online olarak işaretle
+      currentUserId = decoded.user.id; 
+      connectedUsers[currentUserId] = socket.id; 
       socket.join(currentUserId); // Kullanıcıyı kendi özel odasına al (DM ve Bildirimler için)
       console.log(`Kullanıcı ${currentUserId} socket ${socket.id} ile doğrulandı.`);
-      // Opsiyonel: Kullanıcının online olduğunu yay
-      // socket.broadcast.emit('user_online', currentUserId);
     } catch (err) {
       console.error(`Socket token doğrulama hatası (${socket.id}):`, err.message);
-      socket.disconnect(true); // Geçersiz token ise bağlantıyı hemen kes
-      return; // Fonksiyondan çık
+      socket.disconnect(true); 
+      return; 
     }
   } else {
      console.warn(`Token olmadan socket bağlantısı denendi: ${socket.id}. Bağlantı kesiliyor.`);
-     socket.disconnect(true); // Token yoksa bağlantıyı kes
-     return; // Fonksiyondan çık
+     socket.disconnect(true); 
+     return; 
   }
 
   // --- Olay Dinleyicileri (Sadece doğrulanmış kullanıcılar için çalışır) ---
 
-  // 2. Odaya (Panoya) katılma (Grup sohbeti için)
+  // 2. Odaya (Panoya) katılma
   socket.on('join_board', async (boardId) => {
     try {
-        // GÜNCELLEME: 'getUserRoleInBoard' artık tanımlı
         const userRole = await getUserRoleInBoard(currentUserId, boardId);
-        if(hasRequiredRole('VIEWER', userRole)) { // En az 'VIEWER' olmalı
+        if(hasRequiredRole('VIEWER', userRole)) { 
             socket.join(boardId);
             console.log(`Socket ${socket.id} (User: ${currentUserId}), ${boardId} odasına katıldı.`);
         } else {
@@ -128,7 +116,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 3. Grup Mesajı gönderme (Grup sohbeti için)
+  // 3. Grup Mesajı gönderme
   socket.on('send_message', async (data) => {
     const { boardId, text } = data;
     const authorId = currentUserId;
@@ -138,7 +126,6 @@ io.on('connection', (socket) => {
     }
 
     try {
-      // GÜNCELLEME: 'getUserRoleInBoard' artık tanımlı
       const userRole = await getUserRoleInBoard(authorId, boardId);
       if (!hasRequiredRole('COMMENTER', userRole)) {
           socket.emit('message_error', { msg: 'Bu panoya mesaj gönderme yetkiniz yok.' }); return;
@@ -146,9 +133,8 @@ io.on('connection', (socket) => {
 
       const newMessage = await prisma.message.create({
         data: { text: text, boardId: boardId, authorId: authorId },
-        include: { author: { select: { id: true, name: true, avatarUrl: true, username: true } } } // 'username' eklendi
+        include: { author: { select: { id: true, name: true, avatarUrl: true, username: true } } } 
       });
-      // Mesajı odadaki herkese (gönderen dahil) yayınla
       io.to(boardId).emit('receive_message', newMessage);
     } catch (err) {
       console.error("Socket 'send_message' hatası:", err);
@@ -158,27 +144,30 @@ io.on('connection', (socket) => {
 
   // 4. Özel Mesaj (DM) Gönderme
   socket.on('send_dm', async (data) => {
-      // Beklenen data: { receiverId: string, text: string }
       const senderId = currentUserId;
       const { receiverId, text } = data;
 
-      if (!receiverId || !text) { /* Hata emit */ return; }
-      if (senderId === receiverId) { /* Hata emit */ return; }
+      if (!receiverId || !text) { socket.emit('dm_error', { msg: 'Alıcı ID ve mesaj gerekli.' }); return; }
+      if (senderId === receiverId) { socket.emit('dm_error', { msg: 'Kendinize mesaj gönderemezsiniz.' }); return; }
 
       try {
-          // 1. Mesajı DB'ye kaydet (controller fonksiyonunu kullanarak)
           const newMessage = await dmController.sendDirectMessage({ senderId, receiverId, text });
-
-          // 2. Mesajı gönderene geri gönder
-          socket.emit('receive_dm', newMessage);
-
-          // 3. Mesajı alıcıya gönder (eğer online ise kendi odasına - userId)
+          socket.emit('receive_dm', newMessage); // Gönderene geri gönder
           const receiverSocketId = connectedUsers[receiverId];
+          
+          // === DÜZELTME: Anlık bildirim fonksiyonunu al ===
+          const sendRealtimeNotification = app.get('sendRealtimeNotification'); 
+          
           if (receiverSocketId) {
               io.to(receiverId).emit('receive_dm', newMessage); // Alıcının odasına gönder
           } else {
-              // Alıcı online değilse okunmamış mesaj bildirimi oluştur
-              await createNotification(receiverId, `${newMessage.sender.name} size bir mesaj gönderdi.`, null, null, null); // commentId yerine convoId?
+              // Alıcı online değilse SADECE DB'ye kaydet (artık anlık göndermeyi createNotification hallediyor)
+              await createNotification(
+                receiverId, 
+                `${newMessage.sender.name} size bir mesaj gönderdi.`, 
+                null, null, null,
+                sendRealtimeNotification // Fonksiyonu ilet
+              ); 
               console.log(`Kullanıcı ${receiverId} online değil, DM bildirimi oluşturuldu.`);
           }
       } catch (error) {
@@ -191,13 +180,12 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`Socket ayrıldı: ${socket.id} (User: ${currentUserId})`);
     if (currentUserId && connectedUsers[currentUserId] === socket.id) {
-       delete connectedUsers[currentUserId]; // Online listesinden çıkar
-       // Opsiyonel: Kullanıcının offline olduğunu yay
-       // socket.broadcast.emit('user_offline', currentUserId);
+       delete connectedUsers[currentUserId]; 
     }
   });
 });
 
+// === DÜZELTME: Sizin gönderdiğiniz Anlık Bildirim Fonksiyonu ===
 const sendRealtimeNotification = (userId, notificationData) => {
     if (userId && io) { 
         io.to(userId).emit('new_notification', notificationData);
@@ -208,11 +196,8 @@ const sendRealtimeNotification = (userId, notificationData) => {
 }
 // Bu fonksiyonu app'e ekleyerek erişilebilir yapalım
 app.set('sendRealtimeNotification', sendRealtimeNotification);
-
-// --- BİTİŞ: Anlık Bildirim ---
+// === BİTİŞ: Anlık Bildirim ---
 
 // 11. Sunucuyu Belirtilen Portta Başlat
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`Sunucu ${PORT} portunda başlatıldı.`));
-
-// --- Yardımcı Fonksiyonları (utils/authorization.js'den import edilmeli) ---

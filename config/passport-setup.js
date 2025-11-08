@@ -1,6 +1,7 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/config/passport-setup.js
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const prisma = require('../lib/prisma'); // Prisma client'ınızın yolu
+const prisma = require('../lib/prisma'); 
 
 passport.use(
   new GoogleStrategy(
@@ -11,9 +12,6 @@ passport.use(
       scope: ['profile', 'email']
     },
     async (accessToken, refreshToken, profile, done) => {
-      // Bu, bizim 'routes' veya 'controllers' tarafından çağrılmaz.
-      // Bu, 'passport.authenticate' tarafından otomatik olarak kullanılır.
-      
       try {
         const email = profile.emails[0].value;
         const googleId = profile.id;

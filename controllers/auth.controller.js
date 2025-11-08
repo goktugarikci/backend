@@ -108,7 +108,7 @@ exports.login = async (req, res) => {
   }
 };
 
-// 3. GOOGLE OAUTH 2.0 GERİ DÖNÜŞ (CALLBACK) KONTROLCÜSÜ - GÜNCELLENDİ
+// 3. GOOGLE OAUTH 2.0 GERİ DÖNÜŞ (CALLBACK) KONTROLCÜSÜ
 exports.googleCallback = (req, res) => {
   // Passport stratejisi (passport-setup.js) çalıştı ve 'req.user' objesini verdi
   // (req.user objesi artık veritabanından gelen rol bilgisini de içermeli)
@@ -116,22 +116,21 @@ exports.googleCallback = (req, res) => {
   const payload = {
     user: {
       id: req.user.id,
-      role: req.user.role // <-- GÜNCELLEME: Rolü payload'a ekle
+      role: req.user.role // <-- Rolü payload'a ekle
     },
   };
 
   jwt.sign(
     payload,
     process.env.JWT_SECRET,
-    { expiresIn: '1h' },
+    { expiresIn: '1h' }, // Token geçerlilik süresi
     (err, token) => {
       if (err) {
           console.error("JWT imzalama hatası:", err);
           return res.redirect(`${process.env.CLIENT_URL}/login-error?error=jwt_sign_failed`);
       }
       // Kullanıcıyı token ile birlikte frontend'e yönlendir
-      // Frontend, token'ı aldıktan sonra /api/user/me gibi bir endpoint'e
-      // istek atarak rol ve diğer detayları ayrıca alabilir.
+      // Frontend (AuthCallbackPage.tsx) bu token'ı yakalayacak
       res.redirect(`${process.env.CLIENT_URL}/auth/callback?token=${token}`);
     }
   );

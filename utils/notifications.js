@@ -3,13 +3,7 @@ const prisma = require('../lib/prisma');
 
 /**
  * Belirli bir kullanıcı için yeni bir bildirim oluşturur VE anlık olarak gönderir.
- * @param {string} userId - Bildirimi alacak kullanıcının ID'si.
- * @param {string} message - Bildirim mesajı.
- * @param {string | null} boardId - İlgili Pano ID'si.
- * @param {string | null} taskId - İlgili Görev ID'si.
- * @param {string | null} commentId - İlgili Yorum ID'si.
- * @param {function | null} sendRealtimeNotification - (Opsiyonel) server.js'den gelen anlık bildirim fonksiyonu.
- * @returns {Promise<object | null>} Oluşturulan bildirim objesi veya hata durumunda null.
+ * @param {function | null} sendRealtimeNotification - (DÜZELTME) server.js'den gelen anlık bildirim fonksiyonu.
  */
 async function createNotification(userId, message, boardId = null, taskId = null, commentId = null, sendRealtimeNotification = null) {
     if (!userId || !message) {
@@ -38,9 +32,8 @@ async function createNotification(userId, message, boardId = null, taskId = null
         // --- DÜZELTME: WebSocket ile Anlık Bildirim Gönderme ---
         if (sendRealtimeNotification) {
             sendRealtimeNotification(userId, newNotification);
-            console.log(`Anlık Bildirim Gönderildi (Kullanıcı: ${userId}): ${message}`);
         } else {
-             console.log(`Bildirim DB'ye kaydedildi (Socket kapalı): ${userId}`);
+             console.warn(`Bildirim DB'ye kaydedildi (Socket fonksiyonu 'sendRealtimeNotification' sağlanmadı): ${userId}`);
         }
         // --- BİTİŞ ---
 
