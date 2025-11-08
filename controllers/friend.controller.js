@@ -1,3 +1,4 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/friend.controller.js
 const prisma = require('../lib/prisma');
 const { createNotification } = require('../utils/notifications');
 
@@ -67,12 +68,20 @@ exports.sendFriendRequest = async (req, res) => {
 
     // 4. Alıcıya bildirim gönder
     const requesterUser = await prisma.user.findUnique({ where: { id: requesterId }, select: { name: true }});
-    await createNotification(
+    const notification = await createNotification(
       receiver.id,
       `"${requesterUser.name}" size bir arkadaşlık isteği gönderdi.`,
       null, // boardId
       null  // taskId
     );
+    
+    // DÜZELTME: Anlık Bildirim Gönder
+    if (notification) {
+      const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
+      if (sendRealtimeNotification) {
+          sendRealtimeNotification(receiver.id, notification);
+      }
+    }
 
     res.status(201).json(newRequest);
 
@@ -176,7 +185,15 @@ exports.respondToRequest = async (req, res) => {
       
       // Bildirim gönder
       const receiverUser = await prisma.user.findUnique({ where: { id: receiverId }, select: { name: true }});
-      await createNotification(requesterId, `"${receiverUser.name}" arkadaşlık isteğinizi kabul etti!`, null, null);
+      const notification = await createNotification(requesterId, `"${receiverUser.name}" arkadaşlık isteğinizi kabul etti!`, null, null);
+      
+      // DÜZELTME: Anlık Bildirim Gönder
+      if (notification) {
+        const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
+        if (sendRealtimeNotification) {
+            sendRealtimeNotification(requesterId, notification);
+        }
+      }
       
       res.json({ msg: 'Arkadaşlık isteği kabul edildi.' });
 

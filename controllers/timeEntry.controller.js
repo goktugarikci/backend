@@ -29,30 +29,43 @@ exports.startTimeEntry = async (req, res) => {
     const userId = req.user.id; 
 
     try {
+        // Güvenlik: Kullanıcı bu görev için zaman kaydı başlatabilir mi? (MEMBER rolü)
         if (!await checkTaskPermission(userId, taskId, 'MEMBER')) {
             return res.status(403).json({ msg: 'Bu görev için zaman kaydı başlatma yetkiniz yok.' });
         }
-        const runningEntry = await prisma.timeEntry.findFirst({
-            where: { taskId: taskId, userId: userId, endTime: null }
-        });
-        if (runningEntry) {
-            return res.status(400).json({ msg: 'Bu görev için zaten çalışan bir zamanlayıcınız var.', entry: runningEntry });
-        }
 
-        const newEntry = await prisma.timeEntry.create({
-            data: {
-                startTime: new Date(),
+        // Güvenlik: Kullanıcının bu görev için zaten çalışan bir zamanlayıcısı var mı?
+        const runningEntry = await prisma.timeEntry.findFirst({
+            where: {
                 taskId: taskId,
                 userId: userId,
-                endTime: null,
-                duration: null 
+                endTime: null // Bitiş zamanı olmayan kayıtları bul
             }
         });
-        
-        const task = await prisma.task.findUnique({ where: { id: taskId }, select: { title: true, taskList: { select: { boardId: true }}}});
-        if (task) {
-            await logActivity(userId, task.taskList.boardId, 'START_TIME_ENTRY', `"${task.title}" görevi için zamanlayıcıyı başlattı`, taskId);
+        if (runningEntry) {
+            // Zaten çalışıyorsa, hata vermek yerine mevcut kaydı döndür
+            const entryWithUser = await prisma.timeEntry.findUnique({
+                where: { id: runningEntry.id },
+                include: { user: { select: { id: true, name: true, avatarUrl: true }}}
+            });
+            return res.status(200).json(entryWithUser);
+            // VEYA Hata döndür:
+            // return res.status(400).json({ msg: 'Bu görev için zaten çalışan bir zamanlayıcınız var.' });
         }
+
+        // Yeni zaman kaydını başlat
+        const newEntry = await prisma.timeEntry.create({
+            data: {
+                startTime: new Date(), // Şu anki zaman
+                taskId: taskId,
+                userId: userId,
+                endTime: null, 
+                duration: null 
+            },
+            include: { // DÖNÜŞ TİPİ: Frontend'in beklemesi gereken 'TimeEntryWithUser' tipini döndür
+                user: { select: { id: true, name: true, avatarUrl: true } }
+            }
+        });
 
         res.status(201).json(newEntry);
 
@@ -67,16 +80,21 @@ exports.startTimeEntry = async (req, res) => {
 exports.stopTimeEntry = async (req, res) => {
     const { taskId } = req.params;
     const userId = req.user.id;
-    const { notes } = req.body; 
+    const { notes } = req.body; // Opsiyonel notlar
 
     try {
         if (!await checkTaskPermission(userId, taskId, 'MEMBER')) {
             return res.status(403).json({ msg: 'Bu görev için zaman kaydı durdurma yetkiniz yok.' });
         }
 
+        // Durdurulacak (çalışan) zaman kaydını bul (en sonuncusu)
         const runningEntry = await prisma.timeEntry.findFirst({
-            where: { taskId: taskId, userId: userId, endTime: null },
-            orderBy: { startTime: 'desc' }
+            where: {
+                taskId: taskId,
+                userId: userId,
+                endTime: null
+            },
+            orderBy: { startTime: 'desc' } 
         });
 
         if (!runningEntry) {
@@ -85,7 +103,7 @@ exports.stopTimeEntry = async (req, res) => {
 
         const endTime = new Date();
         const durationMs = endTime.getTime() - runningEntry.startTime.getTime();
-        const durationMinutes = Math.round(durationMs / (1000 * 60)); 
+        const durationMinutes = Math.round(durationMs / (1000 * 60));
 
         const stoppedEntry = await prisma.timeEntry.update({
             where: { id: runningEntry.id },
@@ -93,14 +111,11 @@ exports.stopTimeEntry = async (req, res) => {
                 endTime: endTime,
                 duration: durationMinutes,
                 notes: notes || runningEntry.notes 
+            },
+            include: { // DÖNÜŞ TİPİ: 'TimeEntryWithUser' tipini döndür
+                user: { select: { id: true, name: true, avatarUrl: true } }
             }
         });
-        
-        const task = await prisma.task.findUnique({ where: { id: taskId }, select: { title: true, taskList: { select: { boardId: true }}}});
-        if (task) {
-            const durationStr = durationMinutes > 0 ? ` (${durationMinutes} dakika)` : '';
-            await logActivity(userId, task.taskList.boardId, 'STOP_TIME_ENTRY', `"${task.title}" görevi için zamanlayıcıyı durdurdu${durationStr}`, taskId);
-        }
 
         res.json(stoppedEntry);
 
@@ -111,7 +126,7 @@ exports.stopTimeEntry = async (req, res) => {
     }
 };
 
-// 3. Manuel Zaman Girişi Ekleme (BİLDİRİM EKLENDİ)
+// 3. Manuel Zaman Girişi Ekleme (BİLDİRİM GÖNDERME DÜZELTMESİ)
 exports.addManualTimeEntry = async (req, res) => {
     const { taskId } = req.params;
     const { durationInMinutes, date, notes } = req.body;
@@ -127,7 +142,7 @@ exports.addManualTimeEntry = async (req, res) => {
     let startTime;
     try {
         startTime = new Date(date + 'T00:00:00.000Z'); 
-        if (isNaN(startTime.getTime())) throw new Error();
+        if (isNaN(startTime.getTime())) throw new Error(); 
     } catch (e) {
         return res.status(400).json({ msg: 'Geçersiz tarih formatı. YYYY-MM-DD kullanın.' });
     }
@@ -159,10 +174,12 @@ exports.addManualTimeEntry = async (req, res) => {
                 taskId: taskId,
                 userId: userId,
             },
-            // YENİ: Dönen veriye 'user'ı ekle (Arayüzde anlık güncelleme için)
-            include: { user: { select: { id: true, name: true, avatarUrl: true } } }
+            include: { // DÖNÜŞ TİPİ: 'TimeEntryWithUser' tipini döndür
+                user: { select: { id: true, name: true, avatarUrl: true } }
+            }
         });
         
+        // Loglama ve Bildirim
         const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true }});
         const durationStr = `${durationInMinutes} dakika`;
         const message = `"${user ? user.name : 'Biri'}" "${task.title}" görevine manuel olarak ${durationStr} ekledi.`;
@@ -172,12 +189,21 @@ exports.addManualTimeEntry = async (req, res) => {
         const recipients = new Set([task.createdById, ...task.assigneeIds]);
         recipients.delete(userId); 
         recipients.delete(null);
+        
+        // === DÜZELTME: Anlık Bildirim Gönder ===
+        const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
 
         for (const recipientId of recipients) {
             if (recipientId) {
-                await createNotification(recipientId, message, boardId, taskId);
+                const notification = await createNotification(recipientId, message, boardId, taskId);
+                // Socket'e emit et
+                if (notification && sendRealtimeNotification) {
+                    sendRealtimeNotification(recipientId, notification);
+                }
             }
         }
+        // === BİTİŞ ===
+
         res.status(201).json(manualEntry);
 
     } catch (err) {
@@ -228,23 +254,25 @@ exports.getTimeEntriesForTask = async (req, res) => {
 
 // 5. Kullanıcının Belirli Aralıktaki Zaman Kayıtlarını Getirme
 exports.getTimeEntriesForUser = async (req, res) => {
-    // ... (Bu fonksiyon aynı kalır, frontend'de şu an kullanılmıyor)
     const userId = req.user.id; 
-    const { start, end, page = 1, limit = 25 } = req.query; 
+    const { startDate, endDate, page = 1, limit = 25 } = req.query; 
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
+
     const whereClause = { userId: userId };
     try {
-        if (start) {
-            whereClause.startTime = { ...whereClause.startTime, gte: new Date(start + 'T00:00:00.000Z') };
+        if (startDate) {
+            whereClause.startTime = { ...whereClause.startTime, gte: new Date(startDate + 'T00:00:00.000Z') };
         }
-        if (end) {
-            whereClause.startTime = { ...whereClause.startTime, lte: new Date(end + 'T23:59:59.999Z') };
+        if (endDate) {
+            whereClause.startTime = { ...whereClause.startTime, lte: new Date(endDate + 'T23:59:59.999Z') };
         }
     } catch(e) {
          return res.status(400).json({ msg: 'Geçersiz tarih formatı. YYYY-MM-DD kullanın.' });
     }
+
+
     try {
         const entries = await prisma.timeEntry.findMany({
             where: whereClause,
@@ -255,65 +283,64 @@ exports.getTimeEntriesForUser = async (req, res) => {
                 task: { select: { id: true, title: true } }
             }
         });
+
         const totalEntries = await prisma.timeEntry.count({ where: whereClause });
+
         res.json({
             entries,
             totalEntries,
             currentPage: pageNum,
             totalPages: Math.ceil(totalEntries / limitNum)
         });
+
     } catch (err) {
         console.error("getTimeEntriesForUser Hatası:", err.message);
         res.status(500).send('Sunucu Hatası');
     }
 };
 
-// 6. YENİ: Zaman Girişini Güncelleme (Düzenleme)
+// 6. Zaman Girişini Güncelleme (YENİ)
 exports.updateTimeEntry = async (req, res) => {
     const { entryId } = req.params;
     const { durationInMinutes, date, notes } = req.body;
     const userId = req.user.id;
 
+    if (durationInMinutes === undefined && date === undefined && notes === undefined) {
+         return res.status(400).json({ msg: 'Güncellenecek en az bir alan gereklidir.' });
+    }
+
     try {
-        const entry = await prisma.timeEntry.findUnique({
-            where: { id: entryId },
-            select: { userId: true, taskId: true, startTime: true, endTime: true, task: { select: { title: true, taskList: { select: { boardId: true }} } } }
-        });
-
+        const entry = await prisma.timeEntry.findUnique({ where: { id: entryId } });
         if (!entry) return res.status(404).json({ msg: 'Zaman kaydı bulunamadı.' });
-        if (!entry.task || !entry.task.taskList) return res.status(404).json({ msg: 'İlişkili görev/pano bulunamadı.' });
 
-        // Güvenlik: Sadece kaydı giren kişi veya Pano Admini düzenleyebilir
-        const userRole = await getUserRoleInBoard(userId, entry.task.taskList.boardId);
+        // Güvenlik: Sadece kaydı oluşturan kişi veya bir ADMIN mi?
+        const userRole = await getUserRoleInBoard(userId, entry.taskId);
         if (entry.userId !== userId && !hasRequiredRole('ADMIN', userRole)) {
             return res.status(403).json({ msg: 'Bu zaman kaydını düzenleme yetkiniz yok.' });
         }
-        
-        // Sadece manuel girilmiş (durdurulmuş) kayıtlar düzenlenebilir
-        if (entry.endTime === null) {
-            return res.status(400).json({ msg: 'Çalışan bir zamanlayıcıyı düzenleyemezsiniz. Önce durdurun.' });
-        }
 
         const dataToUpdate = {};
-        let newStartTime = entry.startTime;
-        
-        if (date) {
+        if (notes !== undefined) dataToUpdate.notes = notes || null;
+
+        // Süre veya Tarih değişirse, 'startTime' ve 'endTime'ı yeniden hesapla
+        const newDuration = durationInMinutes !== undefined ? Math.round(durationInMinutes) : entry.duration;
+        const newDateStr = date !== undefined ? date : entry.startTime.toISOString().split('T')[0];
+
+        if (durationInMinutes !== undefined || date !== undefined) {
+             if (newDuration === null || newDuration <= 0) return res.status(400).json({ msg: 'Geçerli bir süre (durationInMinutes) gereklidir.' });
              try {
-                newStartTime = new Date(date + 'T00:00:00.000Z');
-                if (isNaN(newStartTime.getTime())) throw new Error();
-                dataToUpdate.startTime = newStartTime;
+                const startTime = new Date(newDateStr + 'T00:00:00.000Z');
+                if (isNaN(startTime.getTime())) throw new Error('Invalid date');
+                const endTime = new Date(startTime.getTime() + newDuration * 60000);
+                
+                dataToUpdate.startTime = startTime;
+                dataToUpdate.endTime = endTime;
+                dataToUpdate.duration = newDuration;
              } catch (e) {
-                return res.status(400).json({ msg: 'Geçersiz tarih formatı. YYYY-MM-DD kullanın.' });
+                 return res.status(400).json({ msg: 'Geçersiz tarih formatı. YYYY-MM-DD kullanın.' });
              }
         }
-        if (durationInMinutes) {
-            dataToUpdate.duration = Math.round(durationInMinutes);
-            dataToUpdate.endTime = new Date(newStartTime.getTime() + dataToUpdate.duration * 60000);
-        }
-        if (notes !== undefined) {
-            dataToUpdate.notes = notes || null;
-        }
-
+        
         const updatedEntry = await prisma.timeEntry.update({
             where: { id: entryId },
             data: dataToUpdate,
@@ -329,32 +356,24 @@ exports.updateTimeEntry = async (req, res) => {
     }
 };
 
-// 7. YENİ: Zaman Girişini Silme
+// 7. Zaman Girişini Silme (YENİ)
 exports.deleteTimeEntry = async (req, res) => {
     const { entryId } = req.params;
     const userId = req.user.id;
 
     try {
-        const entry = await prisma.timeEntry.findUnique({
-            where: { id: entryId },
-            select: { userId: true, taskId: true, task: { select: { title: true, taskList: { select: { boardId: true }} } } }
-        });
-
+        const entry = await prisma.timeEntry.findUnique({ where: { id: entryId } });
         if (!entry) return res.status(404).json({ msg: 'Zaman kaydı bulunamadı.' });
-        if (!entry.task || !entry.task.taskList) return res.status(404).json({ msg: 'İlişkili görev/pano bulunamadı.' });
 
-        // Güvenlik: Sadece kaydı giren kişi veya Pano Admini silebilir
-        const userRole = await getUserRoleInBoard(userId, entry.task.taskList.boardId);
+        // Güvenlik: Sadece kaydı oluşturan kişi veya bir ADMIN mi?
+        const userRole = await getUserRoleInBoard(userId, entry.taskId);
         if (entry.userId !== userId && !hasRequiredRole('ADMIN', userRole)) {
             return res.status(403).json({ msg: 'Bu zaman kaydını silme yetkiniz yok.' });
         }
 
         await prisma.timeEntry.delete({ where: { id: entryId } });
-        
-        await logActivity(userId, entry.task.taskList.boardId, 'DELETE_TIME_ENTRY', `"${entry.task.title}" görevinden bir zaman kaydını sildi`, entry.taskId);
-
-        res.json({ msg: 'Zaman kaydı silindi.' });
-
+        res.json({ msg: 'Zaman kaydı başarıyla silindi.' });
+    
     } catch (err) {
         if (err.code === 'P2025') return res.status(404).json({ msg: 'Zaman kaydı bulunamadı.' });
         console.error("deleteTimeEntry Hatası:", err.message);

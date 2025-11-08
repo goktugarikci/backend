@@ -1,76 +1,76 @@
+// goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/reaction.controller.js
 const prisma = require('../lib/prisma');
+const { getUserRoleInBoard, hasRequiredRole } = require('../utils/authorization');
 
-// --- HELPER SECURITY FUNCTIONS ---
-// (Assuming these are defined elsewhere, e.g., utils/accessControl.js or imported from other controllers)
+// --- YARDIMCI GÜVENLİK FONKSİYONLARI ---
 
-// Checks if a user is a member of a board
-const checkBoardAccess = async (userId, boardId) => {
+// Kullanıcının bir Pano üzerinde (belirtilen minimum rolle) yetkisi olup olmadığını kontrol eder
+const checkBoardPermission = async (userId, boardId, requiredRole = 'VIEWER') => {
   if (!userId || !boardId) return false;
-  const membership = await prisma.boardMembership.findUnique({
-    where: { userId_boardId: { userId: userId, boardId: boardId } },
-  });
-  return !!membership; // Returns true if membership exists, false otherwise
+  try {
+    const userRole = await getUserRoleInBoard(userId, boardId);
+    return hasRequiredRole(requiredRole, userRole);
+  } catch (error) {
+    console.error(`checkBoardPermission error for board ${boardId}:`, error);
+    return false;
+  }
 };
 
-// Checks if a user has access to a specific task (by checking board membership)
-const checkTaskAccess = async (userId, taskId) => {
+// Kullanıcının bir Görev üzerinde (belirtilen minimum rolle) yetkisi olup olmadığını kontrol eder
+const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
   if (!userId || !taskId) return false;
-  const task = await prisma.task.findUnique({
-    where: { id: taskId },
-    select: { taskList: { select: { boardId: true } } },
-  });
-  if (!task) return false; // Task doesn't exist
-  return await checkBoardAccess(userId, task.taskList.boardId);
+  try {
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: { taskList: { select: { boardId: true } } },
+    });
+    if (!task) return false; // Görev yoksa yetki de yok
+    return await checkBoardPermission(userId, task.taskList.boardId, requiredRole);
+  } catch (error) {
+    console.error(`checkTaskPermission error for task ${taskId}:`, error);
+    return false;
+  }
 };
 
-// Helper Function: Gets the Board ID from a Comment ID for authorization checks
+// Yorum ID'sinden Pano ID'sini bulan yardımcı fonksiyon
 const getBoardIdFromComment = async (commentId) => {
     try {
         const comment = await prisma.taskComment.findUnique({
             where: { id: commentId },
             select: { task: { select: { taskList: { select: { boardId: true } } } } }
         });
-        // Return the boardId if found, otherwise null
         return comment?.task?.taskList?.boardId ?? null;
     } catch (error) {
-        // Handle cases where comment or related task/list might not be found
         console.error(`Error fetching boardId for comment ${commentId}:`, error);
         return null;
     }
 };
-// --- END HELPER FUNCTIONS ---
+// --- BİTİŞ: YARDIMCI FONKSİYONLAR ---
 
 
-// 1. Add/Remove Reaction to a Task (Toggle)
+// 1. Bir Göreve Reaksiyon Ekle/Kaldır (Toggle)
 exports.toggleTaskReaction = async (req, res) => {
     const { taskId } = req.params;
-    const { emoji } = req.body; // Emoji to add/remove (e.g., "👍")
-    const userId = req.user.id; // User performing the reaction (from authMiddleware)
+    const { emoji } = req.body; 
+    const userId = req.user.id; 
 
     if (!emoji) {
-        return res.status(400).json({ msg: 'Emoji is required.' });
+        return res.status(400).json({ msg: 'Emoji gerekli.' });
     }
-    // Optional: Basic emoji format validation
-    // if (!/\p{Emoji}/u.test(emoji)) {
-    //     return res.status(400).json({ msg: 'Invalid emoji format.' });
-    // }
 
     try {
-        // Security: Can the user access this task?
-        const hasAccess = await checkTaskAccess(userId, taskId);
-        if (!hasAccess) {
-             // Check if the task exists before denying access based on permissions
+        // Güvenlik: Kullanıcı bu görevi (ve panoyu) görebilir mi? (COMMENTER rolü)
+        if (!await checkTaskPermission(userId, taskId, 'COMMENTER')) {
              const taskExists = await prisma.task.findUnique({ where: { id: taskId }, select: { id: true } });
              if (!taskExists) {
-                return res.status(404).json({ msg: 'Task not found.' });
+                return res.status(404).json({ msg: 'Görev bulunamadı.' });
              }
-            return res.status(403).json({ msg: 'You do not have permission to react to this task.' });
+            return res.status(403).json({ msg: 'Bu göreve tepki verme yetkiniz yok.' });
         }
 
-        // Find existing reaction using the unique constraint
+        // Mevcut reaksiyonu (benzersiz anahtar üzerinden) bul
         const existingReaction = await prisma.reaction.findUnique({
             where: {
-                // Prisma's composite unique index name format for MongoDB
                 userId_emoji_taskId: {
                     userId: userId,
                     emoji: emoji,
@@ -79,85 +79,76 @@ exports.toggleTaskReaction = async (req, res) => {
             }
         });
 
-        let updatedReactions;
         let message;
 
         if (existingReaction) {
-            // Reaction exists: Delete it
+            // Reaksiyon varsa: Sil
             await prisma.reaction.delete({
                 where: { id: existingReaction.id }
             });
-            message = 'Reaction removed.';
+            message = 'Reaksiyon kaldırıldı.';
 
         } else {
-            // Reaction doesn't exist: Create it
+            // Reaksiyon yoksa: Oluştur
             await prisma.reaction.create({
                 data: {
                     emoji: emoji,
                     userId: userId,
-                    taskId: taskId, // Link to the task
+                    taskId: taskId, // Göreve bağla
                 }
             });
-            message = 'Reaction added.';
+            message = 'Reaksiyon eklendi.';
         }
 
-        // Fetch the updated reaction counts for the task
-        updatedReactions = await prisma.reaction.groupBy({
-            by: ['emoji'],
+        // DÜZELTME: 'groupBy' yerine 'findMany' kullanarak tam listeyi (user objesi dahil) döndür
+        // Bu, frontend'deki 'ReactionSummary[]' tipiyle eşleşir.
+        const updatedReactions = await prisma.reaction.findMany({
             where: { taskId: taskId },
-            _count: { emoji: true }, // Count occurrences of each emoji
-            orderBy: { _count: { emoji: 'desc' } } // Order by most frequent
+            include: {
+                user: { select: { id: true, name: true } } // Frontend'in ihtiyacı olan user bilgisi
+            },
+            orderBy: { createdAt: 'asc' } // Oluşturulma sırasına göre
         });
 
-        // Format the groupBy result for easier frontend consumption
-        const formattedReactions = updatedReactions.map(r => ({
-            emoji: r.emoji,
-            count: r._count.emoji
-        }));
-
-        res.status(existingReaction ? 200 : 201).json({ message, reactions: formattedReactions });
+        res.status(existingReaction ? 200 : 201).json({ message, reactions: updatedReactions });
 
 
     } catch (err) {
-        console.error("toggleTaskReaction Error:", err.message);
-        // P2002: Unique constraint violation (rare, could happen in race conditions)
+        console.error("toggleTaskReaction Hatası:", err.message);
         if (err.code === 'P2002') {
-             return res.status(409).json({ msg: 'Conflict adding reaction, please try again.' });
+             return res.status(409).json({ msg: 'Reaksiyon eklenirken çakışma oluştu, tekrar deneyin.' });
         }
-         // P2025: Related task not found (e.g., during create if task was deleted)
         if (err.code === 'P2025') {
-            return res.status(404).json({ msg: 'Associated task not found.' });
+            return res.status(404).json({ msg: 'İlişkili görev bulunamadı.' });
         }
-        res.status(500).send('Server Error');
+        res.status(500).send('Sunucu Hatası');
     }
 };
 
-// 2. Add/Remove Reaction to a Comment (Toggle)
+// 2. Bir Yoruma Reaksiyon Ekle/Kaldır (Toggle)
 exports.toggleCommentReaction = async (req, res) => {
     const { commentId } = req.params;
     const { emoji } = req.body;
-    const userId = req.user.id; // User performing the action
+    const userId = req.user.id; 
 
     if (!emoji) {
-        return res.status(400).json({ msg: 'Emoji is required.' });
+        return res.status(400).json({ msg: 'Emoji gerekli.' });
     }
 
     try {
-        // Security: Can the user access the board this comment belongs to?
+        // Güvenlik: Kullanıcı bu yorumun olduğu panoya erişebilir mi? (COMMENTER rolü)
         const boardId = await getBoardIdFromComment(commentId);
         if (!boardId) {
-             // getBoardIdFromComment returns null if the comment or its relations don't exist
-             return res.status(404).json({ msg: 'Associated comment or board not found.' });
+             return res.status(404).json({ msg: 'İlişkili yorum veya pano bulunamadı.' });
         }
-        const hasAccess = await checkBoardAccess(userId, boardId);
-        if (!hasAccess) {
-            return res.status(403).json({ msg: 'You do not have permission to react to this comment.' });
+        if (!await checkBoardPermission(userId, boardId, 'COMMENTER')) {
+            return res.status(403).json({ msg: 'Bu yoruma tepki verme yetkiniz yok.' });
         }
 
-        // Find existing reaction
+        // Mevcut reaksiyonu bul
         const existingReaction = await prisma.reaction.findUnique({
             where: {
-                 userId_emoji_commentId: { // Composite unique index name
+                 userId_emoji_commentId: { 
                     userId: userId,
                     emoji: emoji,
                     commentId: commentId,
@@ -165,52 +156,45 @@ exports.toggleCommentReaction = async (req, res) => {
             }
         });
 
-        let updatedReactions;
         let message;
 
         if (existingReaction) {
-            // Exists: Delete it
+            // Varsa: Sil
             await prisma.reaction.delete({
                 where: { id: existingReaction.id }
             });
-            message = 'Reaction removed.';
+            message = 'Reaksiyon kaldırıldı.';
         } else {
-            // Doesn't exist: Create it
+            // Yoksa: Oluştur
             await prisma.reaction.create({
                 data: {
                     emoji: emoji,
                     userId: userId,
-                    commentId: commentId, // Link to the comment
+                    commentId: commentId, // Yoruma bağla
                 }
             });
-            message = 'Reaction added.';
+            message = 'Reaksiyon eklendi.';
         }
 
-        // Fetch updated reaction counts for the comment
-        updatedReactions = await prisma.reaction.groupBy({
-           by: ['emoji'],
+        // DÜZELTME: 'groupBy' yerine 'findMany' kullanarak tam listeyi (user objesi dahil) döndür
+        const updatedReactions = await prisma.reaction.findMany({
            where: { commentId: commentId },
-           _count: { emoji: true },
-           orderBy: { _count: { emoji: 'desc' } }
+           include: {
+               user: { select: { id: true, name: true } }
+           },
+           orderBy: { createdAt: 'asc' }
         });
 
-        // Format the groupBy result
-        const formattedReactions = updatedReactions.map(r => ({
-            emoji: r.emoji,
-            count: r._count.emoji
-        }));
-
-        res.status(existingReaction ? 200 : 201).json({ message, reactions: formattedReactions });
+        res.status(existingReaction ? 200 : 201).json({ message, reactions: updatedReactions });
 
     } catch (err) {
-        console.error("toggleCommentReaction Error:", err.message);
+        console.error("toggleCommentReaction Hatası:", err.message);
         if (err.code === 'P2002') {
-             return res.status(409).json({ msg: 'Conflict adding reaction, please try again.' });
+             return res.status(409).json({ msg: 'Reaksiyon eklenirken çakışma oluştu, tekrar deneyin.' });
         }
-        // P2025: Related comment not found (e.g., during create/find)
         if (err.code === 'P2025') {
-            return res.status(404).json({ msg: 'Associated comment not found.' });
+            return res.status(404).json({ msg: 'İlişkili yorum bulunamadı.' });
         }
-        res.status(500).send('Server Error');
+        res.status(500).send('Sunucu Hatası');
     }
 };

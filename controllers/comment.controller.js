@@ -1,10 +1,23 @@
 // goktugarikci/backend/backend-70a9cc108f7867dd5c32bdc20b3c16149bc11d0d/controllers/comment.controller.js
 const prisma = require('../lib/prisma');
-const { logActivity } = require('../utils/activityLogger');
-const { getUserRoleInBoard, hasRequiredRole } = require('../utils/authorization');
-const { createNotification, sendMentionNotifications } = require('../utils/notifications');
+const { logActivity } = require('../utils/activityLogger'); // Loglama yardımcısı
+const { getUserRoleInBoard, hasRequiredRole } = require('../utils/authorization'); // Yetkilendirme yardımcıları
+const { createNotification, sendMentionNotifications } = require('../utils/notifications'); // Bildirim yardımcıları
 
 // --- YARDIMCI GÜVENLİK FONKSİYONU ---
+// Kullanıcının bir Pano üzerinde (belirtilen minimum rolle) yetkisi olup olmadığını kontrol eder
+const checkBoardPermission = async (userId, boardId, requiredRole = 'VIEWER') => {
+  if (!userId || !boardId) return false;
+  try {
+    const userRole = await getUserRoleInBoard(userId, boardId);
+    return hasRequiredRole(requiredRole, userRole);
+  } catch (error) {
+    console.error(`checkBoardPermission error for board ${boardId}:`, error);
+    return false;
+  }
+};
+
+// Kullanıcının bir Görev üzerinde (belirtilen minimum rolle) yetkisi olup olmadığını kontrol eder
 const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
   if (!userId || !taskId) return false;
   try {
@@ -12,9 +25,9 @@ const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
       where: { id: taskId },
       select: { taskList: { select: { boardId: true } } },
     });
-    if (!task) return false;
-    const userRole = await getUserRoleInBoard(userId, task.taskList.boardId);
-    return hasRequiredRole(requiredRole, userRole);
+    if (!task) return false; // Görev yoksa yetki de yok
+    // Yetkiyi Pano üzerinden kontrol et
+    return await checkBoardPermission(userId, task.taskList.boardId, requiredRole);
   } catch (error) {
     console.error(`checkTaskPermission error for task ${taskId}:`, error);
     return false;
@@ -22,33 +35,36 @@ const checkTaskPermission = async (userId, taskId, requiredRole = 'VIEWER') => {
 };
 // --- BİTİŞ ---
 
-// 1. Bir Göreve Yorum Ekle
+// 1. Bir Göreve Yorum Ekle (Yetki: COMMENTER veya üstü)
 exports.createComment = async (req, res) => {
   const { taskId } = req.params;
   const { text } = req.body;
-  const userId = req.user.id;
+  const userId = req.user.id; // Yorumu yapan kişi (authMiddleware'den)
 
   if (!text || text.trim() === '') {
     return res.status(400).json({ msg: 'Yorum metni boş olamaz.' });
   }
 
   try {
+    // Güvenlik: Görevi ve panosunu bul
     const task = await prisma.task.findUnique({
       where: { id: taskId },
       select: {
-          title: true, 
-          assigneeIds: true, 
-          createdById: true, 
+          title: true, // Bildirim ve log için
+          assigneeIds: true, // Bildirim için
+          createdById: true, // Bildirim için
           taskList: { select: { boardId: true }}
       }
     });
     if (!task || !task.taskList) return res.status(404).json({ msg: 'İlişkili görev veya liste bulunamadı.' });
     const boardId = task.taskList.boardId;
 
+    // Yetki kontrolü: Yorum yapmak için en az COMMENTER olmalı
     if (!await checkBoardPermission(userId, boardId, 'COMMENTER')) {
       return res.status(403).json({ msg: 'Bu göreve yorum yapma yetkiniz yok.' });
     }
 
+    // Yorumu oluştur
     const newComment = await prisma.taskComment.create({
       data: {
         text: text.trim(),
@@ -57,7 +73,7 @@ exports.createComment = async (req, res) => {
       },
       include: { 
         author: { select: { id: true, name: true, avatarUrl: true } },
-        // YENİ: Oluşturulan yorumun (boş) reaksiyonlarını döndür
+        // DÜZELTME: Oluşturulan yorumun (boş) reaksiyonlarını döndür
         reactions: {
             include: {
                 user: { select: { id: true, name: true }}
@@ -66,7 +82,12 @@ exports.createComment = async (req, res) => {
       }
     });
 
+    // Aktivite Logla
     await logActivity(userId, boardId, 'ADD_TASK_COMMENT', `"${newComment.text.substring(0, 30)}..." yorumunu ekledi`, taskId, null, newComment.id);
+
+    // --- DÜZELTME (Bildirim): Anlık Bildirim Göndericiyi al ---
+    const sendRealtimeNotification = req.app.get('sendRealtimeNotification');
+    // --- BİTİŞ ---
 
     // --- Bildirim Oluştur (Standart) ---
     const author = newComment.author;
@@ -74,20 +95,34 @@ exports.createComment = async (req, res) => {
     const previewText = text.substring(0, 50) + (text.length > 50 ? '...' : '');
     const standardMessage = messageTemplate.replace('{preview}', previewText);
 
+    // Görevi oluşturan + atananlar (yorum yapan hariç)
     const recipients = new Set([task.createdById, ...task.assigneeIds]);
-    recipients.delete(userId); 
-    recipients.delete(null); 
+    recipients.delete(userId); // Kendine bildirim gitmesin
+    recipients.delete(null); // Null ID'leri temizle
 
     for (const recipientId of recipients) {
         if (recipientId) {
-             await createNotification(recipientId, standardMessage, boardId, taskId, newComment.id);
+             const notification = await createNotification(recipientId, standardMessage, boardId, taskId, newComment.id);
+             // DÜZELTME: Bildirimi oluşturduktan sonra socket'e emit et
+             if (notification && sendRealtimeNotification) {
+                 sendRealtimeNotification(recipientId, notification);
+             }
         }
     }
     // --- Bitiş: Standart Bildirim ---
 
     // --- @Mention Bildirimi ---
     const mentionMessageTemplate = `{authorName} sizden "${task.title}" görevindeki bir yorumda bahsetti: {preview}`;
-    await sendMentionNotifications(text, userId, mentionMessageTemplate.replace('{preview}', previewText), boardId, taskId, newComment.id);
+    // DÜZELTME: sendMentionNotifications'a 'sendRealtimeNotification' fonksiyonunu da yolla
+    await sendMentionNotifications(
+      text, 
+      userId, 
+      mentionMessageTemplate.replace('{preview}', previewText), 
+      boardId, 
+      taskId, 
+      newComment.id,
+      sendRealtimeNotification // Fonksiyonu buraya ekle
+    );
     // --- BİTİŞ: @Mention Bildirimi ---
 
     res.status(201).json(newComment);
@@ -98,23 +133,25 @@ exports.createComment = async (req, res) => {
      }
 };
 
-// 2. Bir Görevin Yorumlarını Getir
+// 2. Bir Görevin Yorumlarını Getir (Yetki: VIEWER veya üstü)
 exports.getCommentsForTask = async (req, res) => {
   const { taskId } = req.params;
   const userId = req.user.id;
 
   try {
+    // Güvenlik: Kullanıcı bu görevi (ve yorumları) görebilir mi?
     if (!await checkTaskPermission(userId, taskId, 'VIEWER')) {
       return res.status(403).json({ msg: 'Bu yorumları görme yetkiniz yok.' });
     }
 
+    // Yorumları çek
     const comments = await prisma.taskComment.findMany({
       where: { taskId: taskId },
-      orderBy: { createdAt: 'asc' }, 
+      orderBy: { createdAt: 'asc' }, // Eskiden yeniye
       include: {
-        author: { select: { id: true, name: true, avatarUrl: true } }, 
+        author: { select: { id: true, name: true, avatarUrl: true } }, // Yazar bilgisi
         
-        // === DÜZELTME (Reaksiyon hatası için) ===
+        // === DÜZELTME (Reaksiyon hatası için - image_82e3d6.png) ===
         reactions: { 
           include: { // 'select' yerine 'include'
             user: { select: { id: true, name: true } } // 'user' objesini ve içindekileri getir
@@ -173,17 +210,4 @@ exports.deleteComment = async (req, res) => {
         console.error("deleteComment Hatası:", err.message);
         res.status(500).send('Sunucu Hatası');
     }
-};
-
-// --- YARDIMCI Fonksiyon (checkBoardPermission) ---
-// (Bu fonksiyonun board.controller.js veya utils/authorization.js gibi bir yerden import edildiğini varsayıyoruz)
-const checkBoardPermission = async (userId, boardId, requiredRole = 'VIEWER') => {
-  if (!userId || !boardId) return false;
-  try {
-    const userRole = await getUserRoleInBoard(userId, boardId);
-    return hasRequiredRole(requiredRole, userRole);
-  } catch (error) {
-    console.error(`checkBoardPermission error for board ${boardId}:`, error);
-    return false;
-  }
 };
